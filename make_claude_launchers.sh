@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # make_claude_launchers.sh
+# Claude Profile Switcher for Mac — install: curl -fsSL .../main/make_claude_launchers.sh | bash
 # Create (or remove) isolated Claude Desktop launchers - separate profiles
 # (each with its own login/history/settings/tools).
 # Works on any Mac. Safe to re-run: it never deletes profile data unless asked.
@@ -824,7 +825,7 @@ clean_setup() {
   fi
 }
 
-# Run when executed directly, or when piped to bash (curl | bash). Skip only when sourced.
+# Run when executed directly, or when piped to bash (curl | bash). Skip when sourced.
 if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
   require_macos
 
