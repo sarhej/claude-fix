@@ -10,7 +10,7 @@ Run separate **Work** and **Personal** Claude Desktop profiles on one Mac, each
 with its own login, chat history, settings, and connected tools.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
 ```
 
 The default setup keeps your **existing Claude login** as-is and creates only
@@ -100,7 +100,7 @@ launchers that point at your existing `Claude.app`.
 Copy and paste this into Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
 ```
 
 The script will ask a few simple questions. Press Enter to accept the default:
@@ -118,7 +118,7 @@ of asking the first-run question again.
 If you want to inspect the script before running it:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh
+curl -fsSLO https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh
 less make_claude_launchers.sh
 bash make_claude_launchers.sh
 ```
