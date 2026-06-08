@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x make_claude_launchers.sh
+
+      - name: Install ShellCheck
+        run: brew install shellcheck
+
+      - name: Run ShellCheck
+        run: shellcheck make_claude_launchers.sh tests/run_tests.sh tests/lib/harness.sh
+
+      - name: Run test suite
+        run: bash tests/run_tests.sh
