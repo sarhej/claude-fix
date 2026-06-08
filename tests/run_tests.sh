@@ -46,6 +46,19 @@ test_help_aliases() {
   teardown_sandbox
 }
 
+test_piped_execution_works() {
+  test_start "piped execution (curl | bash) does not crash on BASH_SOURCE"
+  setup_sandbox
+  local out code
+  set +e
+  out="$(bash -s help 2>&1 <"$SCRIPT")"
+  code=$?
+  set -e
+  assert_eq "0" "$code" "piped bash exits 0"
+  assert_contains "$out" "make_claude_launchers.sh" "piped bash runs main dispatch"
+  teardown_sandbox
+}
+
 test_not_installed_create_fails() {
   test_start "[not installed] create exits with clear error"
   setup_sandbox
@@ -553,6 +566,7 @@ main() {
   test_slug_mapping
   test_help
   test_help_aliases
+  test_piped_execution_works
   test_not_installed_create_fails
   test_not_installed_implicit_create_fails
   test_not_installed_clean_still_works

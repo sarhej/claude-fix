@@ -824,7 +824,8 @@ clean_setup() {
   fi
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Run when executed directly, or when piped to bash (curl | bash). Skip only when sourced.
+if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
   require_macos
 
   cmd="${1:-create}"
