@@ -28,6 +28,12 @@ $ErrorActionPreference = 'Stop'
 
 $Script:LaunchersDir = Join-Path $env:USERPROFILE 'Applications'
 $Script:MarkerSuffix = '.claude-fix-generated'
+$Script:SupportDir = Join-Path $env:USERPROFILE '.claude-fix'
+$Script:OAuthTargetFile = Join-Path $Script:SupportDir 'oauth-target.json'
+$Script:ProtocolBackupFile = Join-Path $Script:SupportDir 'protocol-handler-backup.json'
+$Script:LaunchProfileScript = Join-Path $Script:SupportDir 'launch-profile.ps1'
+$Script:OAuthProtocolScript = Join-Path $Script:SupportDir 'oauth-protocol.ps1'
+$Script:OAuthTargetMaxAgeMinutes = 60
 
 function Require-Windows {
     if ($env:OS -ne 'Windows_NT') {
@@ -727,6 +733,273 @@ function Get-DesktopPath {
     return [Environment]::GetFolderPath('Desktop')
 }
 
+function Get-DefaultClaudeUserDataDir {
+    return Join-Path $env:APPDATA 'Claude'
+}
+
+function Get-ProfileAppUserModelId {
+    param([string]$Label)
+    $safe = ($Label -replace '[^a-zA-Z0-9]', '')
+    if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'Profile' }
+    return "Claude.ClaudeFix.$safe"
+}
+
+function Get-ClaudeLaunchArgumentList {
+    param(
+        [string]$UserDataDir,
+        [string]$Label = ''
+    )
+
+    $args = @("--user-data-dir=`"$UserDataDir`"")
+    if ($Label) {
+        $args += "--app-user-model-id=$(Get-ProfileAppUserModelId $Label)"
+    }
+    return $args
+}
+
+function Install-ClaudeFixSupportScripts {
+    New-Item -ItemType Directory -Path $Script:SupportDir -Force | Out-Null
+
+    @'
+#Requires -Version 5.1
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$ClaudeExe,
+    [Parameter(Mandatory = $true)]
+    [string]$UserDataDir,
+    [Parameter(Mandatory = $true)]
+    [string]$Label
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$supportDir = Join-Path $env:USERPROFILE '.claude-fix'
+New-Item -ItemType Directory -Path $supportDir -Force | Out-Null
+
+$safeLabel = ($Label -replace '[^a-zA-Z0-9]', '')
+if ([string]::IsNullOrWhiteSpace($safeLabel)) { $safeLabel = 'Profile' }
+
+@{
+    claudeExe   = $ClaudeExe
+    userDataDir = $UserDataDir
+    label       = $Label
+    updatedAt   = (Get-Date).ToString('o')
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $supportDir 'oauth-target.json') -Encoding UTF8
+
+$launchArgs = @(
+    "--user-data-dir=`"$UserDataDir`""
+    "--app-user-model-id=Claude.ClaudeFix.$safeLabel"
+)
+
+Start-Process -FilePath $ClaudeExe -ArgumentList $launchArgs -WorkingDirectory (Split-Path -Parent $ClaudeExe)
+'@ | Set-Content -LiteralPath $Script:LaunchProfileScript -Encoding UTF8
+
+    @'
+#Requires -Version 5.1
+param(
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ProtocolArgs = @()
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Get-DefaultClaudeUserDataDir {
+    return Join-Path $env:APPDATA 'Claude'
+}
+
+function Read-OAuthTargetState {
+    param([int]$MaxAgeMinutes = 60)
+
+    $stateFile = Join-Path $env:USERPROFILE '.claude-fix\oauth-target.json'
+    if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
+    try {
+        $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+        if (-not $state.claudeExe) { return $null }
+        if ($state.updatedAt) {
+            $updated = [DateTime]::Parse($state.updatedAt)
+            if (((Get-Date) - $updated).TotalMinutes -gt $MaxAgeMinutes) { return $null }
+        }
+        return $state
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-MainClaudeProcesses {
+    return @(Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '--type=' })
+}
+
+function Get-UserDataDirFromCommandLine {
+    param([string]$CommandLine)
+
+    if ($CommandLine -match '--user-data-dir="([^"]+)"') {
+        return $Matches[1]
+    }
+    if ($CommandLine -match "--user-data-dir=([^\s""]+)") {
+        return $Matches[1]
+    }
+    return Get-DefaultClaudeUserDataDir
+}
+
+function Resolve-OAuthRoute {
+    $target = Read-OAuthTargetState
+    if ($target) {
+        return [PSCustomObject]@{
+            ClaudeExe   = [string]$target.claudeExe
+            UserDataDir = [string]$target.userDataDir
+            Source      = 'launcher'
+        }
+    }
+
+    $defaultDir = Get-DefaultClaudeUserDataDir
+    $isolated = @()
+    foreach ($proc in (Get-MainClaudeProcesses)) {
+        $dir = Get-UserDataDirFromCommandLine $proc.CommandLine
+        if ($dir -and ($dir -ne $defaultDir)) {
+            $exe = $null
+            if ($proc.CommandLine -match '^"([^"]+claude\.exe)"') {
+                $exe = $Matches[1]
+            }
+            elseif ($proc.CommandLine -match '^(\S+claude\.exe)') {
+                $exe = $Matches[1]
+            }
+            $isolated += [PSCustomObject]@{
+                ClaudeExe   = $exe
+                UserDataDir = $dir
+            }
+        }
+    }
+
+    $isolated = @($isolated | Sort-Object UserDataDir -Unique)
+    if ($isolated.Count -eq 1 -and $isolated[0].ClaudeExe) {
+        return [PSCustomObject]@{
+            ClaudeExe   = $isolated[0].ClaudeExe
+            UserDataDir = $isolated[0].UserDataDir
+            Source      = 'running-isolated'
+        }
+    }
+
+    return [PSCustomObject]@{
+        ClaudeExe   = $null
+        UserDataDir = $defaultDir
+        Source      = 'default'
+    }
+}
+
+$protocolUrl = ($ProtocolArgs | Where-Object { $_ -and $_.StartsWith('claude://', [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+if (-not $protocolUrl) {
+    $protocolUrl = ($ProtocolArgs | Where-Object { $_ } | Select-Object -Last 1)
+}
+if (-not $protocolUrl) { exit 0 }
+
+$route = Resolve-OAuthRoute
+if (-not $route.ClaudeExe) {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Claude\Claude.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\Claude\claude.exe')
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            $route.ClaudeExe = $candidate
+            break
+        }
+    }
+}
+if (-not $route.ClaudeExe) { exit 1 }
+
+$defaultDir = Get-DefaultClaudeUserDataDir
+$launchArgs = @()
+if ($route.UserDataDir -and ($route.UserDataDir -ne $defaultDir)) {
+    $launchArgs += "--user-data-dir=`"$($route.UserDataDir)`""
+}
+$launchArgs += $protocolUrl
+
+Start-Process -FilePath $route.ClaudeExe -ArgumentList $launchArgs -WorkingDirectory (Split-Path -Parent $route.ClaudeExe)
+'@ | Set-Content -LiteralPath $Script:OAuthProtocolScript -Encoding UTF8
+}
+
+function Get-PowerShellExecutable {
+    return (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+}
+
+function Get-LaunchProfileShortcutArguments {
+    param(
+        [string]$ClaudeExe,
+        [string]$UserDataDir,
+        [string]$Label
+    )
+
+    $scriptPath = $Script:LaunchProfileScript
+    return @(
+        '-WindowStyle', 'Hidden',
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', "`"$scriptPath`"",
+        '-ClaudeExe', "`"$ClaudeExe`"",
+        '-UserDataDir', "`"$UserDataDir`"",
+        '-Label', "`"$Label`""
+    ) -join ' '
+}
+
+function Read-ProtocolHandlerCommand {
+    $key = 'HKCU:\Software\Classes\claude\shell\open\command'
+    if (-not (Test-Path -LiteralPath $key)) { return $null }
+    return (Get-ItemProperty -LiteralPath $key -Name '(default)' -ErrorAction SilentlyContinue).'(default)'
+}
+
+function Install-OAuthProtocolHandler {
+    if ($env:CLAUDE_LAUNCHERS_TEST_MODE -eq '1') { return }
+
+    Install-ClaudeFixSupportScripts
+
+    $ourHandler = "`"$(Get-PowerShellExecutable)`" -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$Script:OAuthProtocolScript`" `"%1`""
+    $existing = Read-ProtocolHandlerCommand
+    if ($existing -and $existing -notlike "*$Script:OAuthProtocolScript*") {
+        @{
+            command   = $existing
+            backedUpAt = (Get-Date).ToString('o')
+        } | ConvertTo-Json | Set-Content -LiteralPath $Script:ProtocolBackupFile -Encoding UTF8
+    }
+
+    New-Item -Path 'HKCU:\Software\Classes\claude' -Force | Out-Null
+    Set-ItemProperty -LiteralPath 'HKCU:\Software\Classes\claude' -Name '(default)' -Value 'URL:claude' -Type String
+    New-ItemProperty -LiteralPath 'HKCU:\Software\Classes\claude' -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+    New-Item -Path 'HKCU:\Software\Classes\claude\shell\open\command' -Force | Out-Null
+    Set-ItemProperty -LiteralPath 'HKCU:\Software\Classes\claude\shell\open\command' -Name '(default)' -Value $ourHandler -Type String
+}
+
+function Uninstall-OAuthProtocolHandler {
+    if ($env:CLAUDE_LAUNCHERS_TEST_MODE -eq '1') { return }
+
+    $current = Read-ProtocolHandlerCommand
+    $oursInstalled = $current -and $current -like "*$Script:OAuthProtocolScript*"
+
+    if (-not $oursInstalled) { return }
+
+    if (Test-Path -LiteralPath $Script:ProtocolBackupFile) {
+        try {
+            $backup = Get-Content -LiteralPath $Script:ProtocolBackupFile -Raw | ConvertFrom-Json
+            if ($backup.command) {
+                Set-ItemProperty -LiteralPath 'HKCU:\Software\Classes\claude\shell\open\command' -Name '(default)' -Value $backup.command -Type String
+            }
+            else {
+                Remove-Item -LiteralPath 'HKCU:\Software\Classes\claude\shell\open\command' -Force -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Remove-Item -LiteralPath 'HKCU:\Software\Classes\claude\shell\open\command' -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $Script:ProtocolBackupFile -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        Remove-Item -LiteralPath 'HKCU:\Software\Classes\claude\shell\open\command' -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function New-DesktopShortcut {
     param(
         [string]$SourceShortcut,
@@ -768,10 +1041,12 @@ function New-ProfileLauncher {
     Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Get-MarkerPath $shortcut) -Force -ErrorAction SilentlyContinue
 
+    Install-ClaudeFixSupportScripts
+
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut($shortcut)
-    $link.TargetPath = $ClaudeExe
-    $link.Arguments = "--user-data-dir=`"$data`""
+    $link.TargetPath = Get-PowerShellExecutable
+    $link.Arguments = Get-LaunchProfileShortcutArguments -ClaudeExe $ClaudeExe -UserDataDir $data -Label $Label
     $link.WorkingDirectory = Split-Path -Parent $ClaudeExe
     $link.Description = "Claude Desktop - $Label profile"
     $link.IconLocation = "$ClaudeExe,0"
@@ -818,6 +1093,9 @@ Note:
   Your normal Claude install keeps its current login. Generated launchers open
   isolated profiles via --user-data-dir. Running profiles may appear as
   separate same-looking Claude taskbar icons.
+
+  On Windows, create also registers an OAuth callback router so claude://
+  sign-in links reach the profile launcher you opened (not your default Claude).
 
   create requires Claude Desktop. clean and help work without it.
   If Claude is in an unusual location, set CLAUDE_LAUNCHERS_CLAUDE_EXE.
@@ -988,6 +1266,11 @@ ERROR: duplicate profile data directory from labels: $cleanLabel -> ~/$dirSlug
         New-ProfileLauncher -Label $label -ClaudeExe $claudeExe -DesktopAliases $desktopAliases
     }
 
+    Install-OAuthProtocolHandler
+    Write-Host ''
+    Write-Host 'Registered OAuth callback router for claude:// sign-in links.'
+    Write-Host 'Sign in from a generated launcher so the callback reaches that profile.'
+
     if ($launchAfterCreate) {
         Write-Host ''
         if ($labels.Count -eq 1) {
@@ -1019,6 +1302,9 @@ ERROR: duplicate profile data directory from labels: $cleanLabel -> ~/$dirSlug
             else {
                 Write-Host "Next: in the Claude $label window that just opened, sign in with your $(Get-ProfileDisplayName $label) account,"
                 Write-Host 'then connect the matching email, calendar, Slack, Notion, or other tools there.'
+                Write-Host ''
+                Write-Host 'OAuth tip: keep this profile window open while you approve sign-in in the browser.'
+                Write-Host 'The callback is routed to the launcher you opened most recently.'
             }
         }
         else {
@@ -1114,6 +1400,8 @@ function Invoke-CleanSetup {
         Write-Host "No generated Claude launchers found in $Script:LaunchersDir. Nothing to clean."
         return
     }
+
+    Uninstall-OAuthProtocolHandler
 
     Write-Host ''
     Write-Host 'Cleaned - back to standard: only the normal Claude install remains.'

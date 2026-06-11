@@ -296,7 +296,8 @@ For a label like `Work`, the script produces:
   ```
 
   ```text
-  # Windows (shortcut target)
+  # Windows (shortcut target — runs a wrapper that sets OAuth routing, then launches Claude)
+  powershell.exe -File "%USERPROFILE%\.claude-fix\launch-profile.ps1" ...
   Claude.exe --user-data-dir="C:\Users\you\ClaudeWork"
   ```
 
@@ -341,9 +342,13 @@ profile directory are rejected.
 
 1. **Sanity checks** — confirms Windows and PowerShell 5.1+.
 2. **Locate Claude** — checks standard paths, MSIX package installs, and PATH.
-3. **Create shortcuts** — builds `.lnk` files with `--user-data-dir` via
+3. **Create shortcuts** — builds `.lnk` files that launch a small PowerShell wrapper
+   with `--user-data-dir` and a per-profile App User Model ID via
    `WScript.Shell`, using Claude's icon from the executable.
-4. **Track ownership** — writes a sidecar `.claude-fix-generated` marker next to
+4. **OAuth callback router** — registers a user-level `claude://` protocol handler
+   that forwards sign-in callbacks to the profile you opened most recently (with
+   `--user-data-dir`), instead of your default Claude instance.
+5. **Track ownership** — writes a sidecar `.claude-fix-generated` marker next to
    each shortcut so `clean` only removes launchers this script created.
 
 `-n` tells macOS to launch a **new instance**, which is what allows several
@@ -415,6 +420,16 @@ process with different profile data directories.
 - **Windows SmartScreen** — locally generated shortcuts may trigger a one-time
   warning. Use **More info → Run anyway**, or right-click the shortcut and choose
   **Open** the first time.
+- **Second profile won't sign in / OAuth opens the wrong Claude window (Windows)** —
+  Claude's global `claude://` handler normally launches your **default** Claude
+  instance (the one from Start Menu), not an isolated profile. This script
+  registers an OAuth callback router on `create` and removes it on `clean`.
+  **To sign into a generated profile:** open that profile's launcher (e.g.
+  Claude Personal), then start sign-in and approve it in the browser while that
+  window stays open. Re-open the launcher if you started sign-in more than an
+  hour ago. If Work and Personal are both open and sign-in still lands in the
+  wrong window, close the other profile, open only the one you want to sign
+  into, and try again.
 
 ---
 
@@ -448,7 +463,7 @@ bash tests/run_tests.sh
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
 ```
 
-The Windows suite mirrors the macOS integration tests (45 test cases, 140+ assertions), plus Windows-specific coverage for MSIX path discovery, WScript.Shell shortcuts, and sidecar marker files.
+The Windows suite mirrors the macOS integration tests (49 test cases), plus Windows-specific coverage for MSIX path discovery, WScript.Shell shortcuts, OAuth callback routing, and sidecar marker files.
 
 ### What is covered
 

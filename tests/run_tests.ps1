@@ -36,6 +36,7 @@ function Test-Help {
     Assert-Contains $result.Output '--launch' 'documents launch option'
     Assert-Contains $result.Output 'existing Claude login' 'documents existing profile model'
     Assert-Contains $result.Output 'same-looking Claude taskbar icons' 'documents taskbar icon limitation'
+    Assert-Contains $result.Output 'OAuth callback router' 'documents OAuth routing on Windows'
     Remove-Sandbox
 }
 
@@ -328,14 +329,68 @@ function Test-CreateCustomAndImplicitLabels {
 }
 
 function Test-LauncherShortcutPayload {
-    Start-Test 'launcher embeds isolated --user-data-dir path'
+    Start-Test 'launcher embeds isolated --user-data-dir path via profile wrapper'
     Initialize-Sandbox
     New-MockClaude | Out-Null
     Capture-Script @('create', '--no-desktop', '--no-launch', 'Work') | Out-Null
     $info = Get-ShortcutInfo (Get-LauncherShortcut 'Work')
-    Assert-Contains $info.Arguments '--user-data-dir=' 'passes user-data-dir flag'
-    Assert-Contains $info.Arguments (Join-Path $env:USERPROFILE 'ClaudeWork') 'uses absolute profile dir'
-    Assert-NotContains $info.Arguments '$env:USERPROFILE' 'does not rely on runtime env expansion'
+    Assert-Contains $info.TargetPath 'powershell.exe' 'uses PowerShell profile wrapper'
+    Assert-Contains $info.Arguments 'launch-profile.ps1' 'invokes launch-profile helper'
+    Assert-Contains $info.Arguments (Join-Path $env:USERPROFILE 'ClaudeWork') 'passes isolated profile dir'
+    Assert-Contains $info.Arguments '-Label' 'passes profile label for OAuth routing'
+    Remove-Sandbox
+}
+
+function Test-OAuthSupportScriptsInstalled {
+    Start-Test 'create writes OAuth support scripts under ~/.claude-fix'
+    Initialize-Sandbox
+    New-MockClaude | Out-Null
+    Capture-Script @('create', '--no-desktop', '--no-launch', 'Personal') | Out-Null
+    $support = Join-Path $env:USERPROFILE '.claude-fix'
+    Assert-FileExists (Join-Path $support 'launch-profile.ps1') 'launch-profile helper exists'
+    Assert-FileExists (Join-Path $support 'oauth-protocol.ps1') 'oauth-protocol helper exists'
+    Remove-Sandbox
+}
+
+function Test-LaunchProfileSetsOAuthTarget {
+    Start-Test 'launch-profile helper records OAuth routing target for the profile'
+    Initialize-Sandbox
+    $exe = New-MockClaudeRunnable
+    $data = Join-Path $env:USERPROFILE 'ClaudePersonal'
+    Capture-Script @('create', '--no-desktop', '--no-launch', 'Personal') | Out-Null
+    $launchScript = Join-Path $env:USERPROFILE '.claude-fix\launch-profile.ps1'
+    $env:CLAUDE_MOCK_LAUNCHED_MARKER = Join-Path $Script:Sandbox 'oauth-launch.marker'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $launchScript -ClaudeExe $exe -UserDataDir $data -Label 'Personal' | Out-Null
+    Start-Sleep -Milliseconds 200
+    $stateFile = Join-Path $env:USERPROFILE '.claude-fix\oauth-target.json'
+    Assert-FileExists $stateFile 'oauth target file written'
+    $state = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+    Assert-Equal $data $state.userDataDir 'records profile data dir'
+    Assert-Equal $exe $state.claudeExe 'records Claude executable'
+    Assert-Equal 'Personal' $state.label 'records profile label'
+    Remove-Sandbox
+}
+
+function Test-OAuthProtocolRoutesToRecordedProfile {
+    Start-Test 'oauth-protocol helper forwards claude:// URLs with profile user-data-dir'
+    Initialize-Sandbox
+    $exe = New-MockClaudeRunnable
+    $data = Join-Path $env:USERPROFILE 'ClaudePersonal'
+    $support = Join-Path $env:USERPROFILE '.claude-fix'
+    New-Item -ItemType Directory -Path $support -Force | Out-Null
+    Capture-Script @('create', '--no-desktop', '--no-launch', 'Personal') | Out-Null
+    @{
+        claudeExe   = $exe
+        userDataDir = $data
+        label       = 'Personal'
+        updatedAt   = (Get-Date).ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $support 'oauth-target.json') -Encoding UTF8
+    $protocolScript = Join-Path $support 'oauth-protocol.ps1'
+    $marker = Join-Path $Script:Sandbox 'oauth-protocol.marker'
+    $env:CLAUDE_MOCK_LAUNCHED_MARKER = $marker
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $protocolScript 'claude://login/google-auth?code=test123' | Out-Null
+    Start-Sleep -Milliseconds 400
+    Assert-FileExists $marker 'protocol handler launched Claude with routed args'
     Remove-Sandbox
 }
 
@@ -430,8 +485,8 @@ function Test-QuotedClaudePaths {
     New-MockClaude -Root $root | Out-Null
     Capture-Script @('create', '--no-desktop', '--no-launch', 'Work') | Out-Null
     $info = Get-ShortcutInfo (Get-LauncherShortcut 'Work')
-    Assert-Contains $info.TargetPath "Sergej's" 'apostrophe path segment survived'
-    Assert-Contains $info.TargetPath 'Back' 'backslash path segment survived'
+    Assert-Contains $info.Arguments "Sergej's" 'apostrophe path segment survived'
+    Assert-Contains $info.Arguments 'Back' 'backslash path segment survived'
     Assert-Contains $info.Arguments (Join-Path $env:USERPROFILE 'ClaudeWork') 'profile dir still absolute'
     Remove-Sandbox
 }
@@ -682,6 +737,9 @@ Test-ManagementMenuCreateAnotherProfile
 Test-ManagementMenuStartFreshProfile
 Test-CreateCustomAndImplicitLabels
 Test-LauncherShortcutPayload
+Test-OAuthSupportScriptsInstalled
+Test-LaunchProfileSetsOAuthTarget
+Test-OAuthProtocolRoutesToRecordedProfile
 Test-OnboardingResetProfileData
 Test-LauncherUsesClaudeIcon
 Test-GeneratedLauncherHasMarker
