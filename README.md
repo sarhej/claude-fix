@@ -3,14 +3,23 @@
 [![Tests](https://github.com/sarhej/claude-fix/actions/workflows/test.yml/badge.svg)](https://github.com/sarhej/claude-fix/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-supported-blue.svg)](#requirements)
+[![Windows](https://img.shields.io/badge/Windows-supported-blue.svg)](#requirements-windows)
 
-**Claude Profile Switcher for Mac.**
+**Claude Profile Switcher for Mac and Windows.**
 
-Run separate **Work** and **Personal** Claude Desktop profiles on one Mac, each
+Run separate **Work** and **Personal** Claude Desktop profiles on one computer, each
 with its own login, chat history, settings, and connected tools.
+
+**macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.ps1 | iex
 ```
 
 The default setup keeps your **existing Claude login** as-is and creates only
@@ -25,10 +34,11 @@ When the new profile opens, sign in with your **other** account and connect the
 matching tools there.
 
 **Trust check:** this project is local-only, dependency-free, and covered by
-macOS integration tests in GitHub Actions. Review the source and test suite on
-GitHub before running if you want the full details.
+integration tests in GitHub Actions (macOS and Windows). Review the source and
+test suite on GitHub before running if you want the full details.
 
-`make_claude_launchers.sh` creates separate, dock-friendly launchers for
+`make_claude_launchers.sh` (macOS) and `make_claude_launchers.ps1` (Windows)
+create separate, clickable launchers for
 [Claude Desktop](https://claude.ai/download) — each with its **own login,
 chat history, settings, and connected tools**. Think *Work* vs *Personal*
 (different email, calendar, Slack, etc.), or one profile per client.
@@ -84,6 +94,8 @@ launchers that point at your existing `Claude.app`.
 
 ## Requirements
 
+### macOS
+
 - **macOS** (the script refuses to run anywhere else).
 - **Claude Desktop** installed — [download here](https://claude.ai/download).
   The script auto-detects it in `/Applications`, `~/Applications`, via Launch
@@ -91,16 +103,47 @@ launchers that point at your existing `Claude.app`.
 - Built-in macOS tools: `osacompile` and `osascript` (preinstalled).
 - No Python, Pillow, icon conversion, or package installation is required.
 
+### Windows
+
+- **Windows 10 or later** with **PowerShell 5.1+** (preinstalled).
+- **Claude Desktop** installed — [download here](https://claude.ai/download).
+  The script auto-detects standard install paths, MSIX package installs under
+  `%LOCALAPPDATA%\Packages\Claude_*`, and `Claude.exe` on your PATH.
+- No extra packages or admin rights required.
+- If Claude is in an unusual location, set `CLAUDE_LAUNCHERS_CLAUDE_EXE` to the
+  full path of `Claude.exe` (or `claude.exe` for MSIX installs).
+
 ---
 
 ## Installation
 
-### One-Line Install
+### macOS — One-Line Install
 
 Copy and paste this into Terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+```
+
+### Windows — One-Line Install
+
+Copy and paste this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.ps1 | iex
+```
+
+If execution policy blocks scripts, download first and run:
+
+```powershell
+irm -OutFile make_claude_launchers.ps1 https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.ps1
+.\make_claude_launchers.ps1
+```
+
+If your execution policy still blocks local scripts, use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\make_claude_launchers.ps1
 ```
 
 The script will ask a few simple questions. Press Enter to accept the default:
@@ -125,21 +168,37 @@ bash make_claude_launchers.sh
 
 ### Clone the Repo
 
+**macOS:**
+
 ```bash
 git clone https://github.com/sarhej/claude-fix.git
 cd claude-fix
 bash make_claude_launchers.sh
 ```
 
-Executable permissions are optional; `bash make_claude_launchers.sh ...` works.
+**Windows:**
+
+```powershell
+git clone https://github.com/sarhej/claude-fix.git
+cd claude-fix
+.\make_claude_launchers.ps1
+```
+
+Use `powershell -NoProfile -ExecutionPolicy Bypass -File .\make_claude_launchers.ps1` only if execution policy blocks `.\make_claude_launchers.ps1`.
+
+Executable permissions are optional on macOS; `bash make_claude_launchers.sh ...` works.
 
 ---
 
 ## Usage
 
+**macOS** (`make_claude_launchers.sh`) and **Windows** (`make_claude_launchers.ps1`)
+share the same commands:
+
 ```bash
 # Interactive setup: keep existing Claude login, add the missing profile
-./make_claude_launchers.sh
+./make_claude_launchers.sh          # macOS
+.\make_claude_launchers.ps1       # Windows
 
 # Create custom launchers (one per label) for power users
 ./make_claude_launchers.sh create Work Personal Clients
@@ -163,8 +222,8 @@ Executable permissions are optional; `bash make_claude_launchers.sh ...` works.
 ./make_claude_launchers.sh help
 ```
 
-After creation, the script opens `~/Applications` in Finder unless it already
-launched the new profile for you.
+After creation, the script opens `~/Applications` in Finder (macOS) or File Explorer
+(Windows) unless it already launched the new profile for you.
 
 If you choose to launch the new profile right away, only that new Claude window
 opens. Sign into it with your other account, then connect the matching tools.
@@ -220,32 +279,39 @@ Claude account and does not change the normal Claude app.
 **Default interactive setup**
 
 If your current Claude is already signed into Work / Company, the script creates
-only `Claude Personal.app` and leaves your normal Claude app untouched.
+only `Claude Personal` and leaves your normal Claude app untouched.
 
-If your current Claude is Personal, it creates only `Claude Work.app`.
+If your current Claude is Personal, it creates only `Claude Work`.
 
 **Explicit CLI labels**
 
 For a label like `Work`, the script produces:
 
-- **`~/Applications/Claude Work.app`** — a tiny AppleScript applet that runs:
+- **`~/Applications/Claude Work`** — a launcher (macOS `.app` or Windows `.lnk`)
+  that runs Claude with an isolated profile directory:
 
   ```bash
+  # macOS
   open -n -a '/Applications/Claude.app' --args --user-data-dir="$HOME/ClaudeWork"
+  ```
+
+  ```text
+  # Windows (shortcut target)
+  Claude.exe --user-data-dir="C:\Users\you\ClaudeWork"
   ```
 
 - **`~/ClaudeWork/`** — the isolated profile data directory (created by Claude
   on first launch; holds that profile's login, history, and settings).
 - **Optional Desktop copies** — clickable copies like
-  `~/Desktop/Claude Work.app`, for people who expect to launch apps from the
+  `~/Desktop/Claude Work`, for people who expect to launch apps from the
   Desktop.
 
 | Profile | Normal Claude app | Generated launcher | Data directory |
 |---------|-------------------|--------------------|----------------|
 | Existing Work login | stays as Work / Company | — | Claude's default profile data |
-| Added Personal | — | `~/Applications/Claude Personal.app` | `~/ClaudePersonal` |
+| Added Personal | — | `~/Applications/Claude Personal` | `~/ClaudePersonal` |
 | Existing Personal login | stays as Personal | — | Claude's default profile data |
-| Added Work | — | `~/Applications/Claude Work.app` | `~/ClaudeWork` |
+| Added Work | — | `~/Applications/Claude Work` | `~/ClaudeWork` |
 
 Launcher names map to data dirs deterministically (`"Big Client"` →
 `~/ClaudeBigClient`), so `create` and `clean` always agree on paths.
@@ -259,6 +325,8 @@ profile directory are rejected.
 
 ## How it works
 
+**macOS**
+
 1. **Sanity checks** — confirms macOS and that required tools exist.
 2. **Locate Claude** — checks standard paths, then Launch Services, then
    Spotlight. Exits with a clear message (and the download link) if not found.
@@ -269,6 +337,15 @@ profile directory are rejected.
 5. **Refresh Finder metadata** — `touch`es the bundle so
    Finder picks up the change.
 
+**Windows**
+
+1. **Sanity checks** — confirms Windows and PowerShell 5.1+.
+2. **Locate Claude** — checks standard paths, MSIX package installs, and PATH.
+3. **Create shortcuts** — builds `.lnk` files with `--user-data-dir` via
+   `WScript.Shell`, using Claude's icon from the executable.
+4. **Track ownership** — writes a sidecar `.claude-fix-generated` marker next to
+   each shortcut so `clean` only removes launchers this script created.
+
 `-n` tells macOS to launch a **new instance**, which is what allows several
 Claude profiles to run simultaneously.
 
@@ -276,9 +353,9 @@ Important caveat: profile isolation depends on Claude Desktop continuing to
 honor Electron/Chromium's `--user-data-dir` flag. That works today for this use
 case, but Anthropic could change Claude Desktop in a future release.
 
-Dock icon caveat: the launchers use Claude's normal icon, and running profiles
-may appear as separate but same-looking Claude icons in the Dock. This is a
-macOS limitation of launching the same underlying `/Applications/Claude.app`
+Dock / taskbar icon caveat: the launchers use Claude's normal icon, and running
+profiles may appear as separate but same-looking Claude icons in the Dock or
+taskbar. This is a platform limitation of launching the same underlying Claude
 process with different profile data directories.
 
 ---
@@ -294,8 +371,8 @@ process with different profile data directories.
   accidental Enter keeps your data. Purge only targets generated profile
   directories such as `~/ClaudePersonal`; it never deletes your normal Claude
   app or its default profile data.
-- **No dependencies or package installs.** The script uses only built-in macOS
-  tooling and never installs Python packages.
+- **No dependencies or package installs.** The scripts use only built-in
+  platform tooling and never install Python packages or other dependencies.
 
 ---
 
@@ -307,16 +384,19 @@ process with different profile data directories.
 - It does **not** encrypt Claude profile data. Profiles are stored as normal
   local Claude/Electron user data.
 - It does **not** guarantee official Anthropic support for `--user-data-dir`.
-- It does **not** create different-looking running Dock icons. Profiles may
-  appear as separate but identical Claude icons.
+- It does **not** create different-looking running Dock/taskbar icons. Profiles
+  may appear as separate but identical Claude icons.
 
 ---
 
 ## Troubleshooting
 
 - **"Claude Desktop is not installed"** — install it from
-  [claude.ai/download](https://claude.ai/download), or move it to
-  `/Applications` if it's in an unusual location.
+  [claude.ai/download](https://claude.ai/download). On macOS, move Claude to
+  `/Applications` if it is in an unusual location. On Windows, if Claude is
+  installed elsewhere, set `CLAUDE_LAUNCHERS_CLAUDE_EXE` to the full path of
+  `Claude.exe` before running the script. `clean` and `help` work without Claude;
+  only `create` requires it.
 - **Wrong account opens in the new profile** — an earlier sign-in may already be
   saved in the launcher's local folder (`~/ClaudePersonal` or `~/ClaudeWork`).
   Re-run the script and choose **start fresh** when prompted. This only clears
@@ -332,6 +412,9 @@ process with different profile data directories.
   `--user-data-dir`. Verify by signing into different accounts in each launcher.
 - **macOS Gatekeeper warning** — the launchers are locally generated and
   unsigned. Right-click → **Open** the first time if prompted.
+- **Windows SmartScreen** — locally generated shortcuts may trigger a one-time
+  warning. Use **More info → Run anyway**, or right-click the shortcut and choose
+  **Open** the first time.
 
 ---
 
@@ -349,13 +432,23 @@ returning your Mac to the standard single Claude setup. The original
 
 ## Testing
 
-The project includes an integration test suite that runs in an **isolated
-temporary HOME** — it never touches your real Claude install, Dock, or profile
+The project includes integration test suites that run in an **isolated
+temporary home directory** — they never touch your real Claude install or profile
 data.
+
+**macOS:**
 
 ```bash
 bash tests/run_tests.sh
 ```
+
+**Windows:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\run_tests.ps1
+```
+
+The Windows suite mirrors the macOS integration tests (45 test cases, 140+ assertions), plus Windows-specific coverage for MSIX path discovery, WScript.Shell shortcuts, and sidecar marker files.
 
 ### What is covered
 
@@ -381,10 +474,11 @@ bash tests/run_tests.sh
 | **clean --purge** | Decline (default), confirm `y`/`Y`, delete profile data |
 | **Full lifecycle** | create → clean → re-create with data preserved |
 
-Tests require **macOS** (`osacompile`, `osascript`). On Linux they
-exit gracefully with a skip message.
+Tests require **macOS** (`osacompile`, `osascript`) or **Windows** (PowerShell,
+`WScript.Shell`). On other platforms they exit gracefully with a skip message.
 
-CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml`).
+CI runs automatically on push/PR via GitHub Actions
+(`.github/workflows/test.yml`) on both macOS and Windows.
 
 ---
 

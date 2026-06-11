@@ -23,3 +23,12 @@ jobs:
 
       - name: Run test suite
         run: bash tests/run_tests.sh
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run test suite
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/run_tests.ps1
