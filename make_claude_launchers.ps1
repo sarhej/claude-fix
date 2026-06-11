@@ -175,37 +175,214 @@ function Get-ShortcutPath {
     return Join-Path $Script:LaunchersDir "$(Get-LauncherName $Label).lnk"
 }
 
+function Get-SafeProgramFiles {
+    if ($env:ProgramFiles) { return $env:ProgramFiles }
+    return [Environment]::GetFolderPath('ProgramFiles')
+}
+
+function Get-SafeProgramFilesX86 {
+    if (${env:ProgramFiles(x86)}) { return ${env:ProgramFiles(x86)} }
+    return [Environment]::GetFolderPath('ProgramFilesX86')
+}
+
+function Resolve-ClaudeExeCandidate {
+    param([string]$Path)
+
+    if (-not $Path) { return $null }
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    return (Resolve-Path -LiteralPath $Path).Path
+}
+
+function Resolve-ShortcutTargetPath {
+    param([string]$ShortcutPath)
+
+    if (-not (Test-Path -LiteralPath $ShortcutPath)) { return $null }
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($ShortcutPath)
+        $target = $link.TargetPath
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($link) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+        if ($target -match '(?i)\\claude\.exe$') {
+            return (Resolve-ClaudeExeCandidate $target)
+        }
+    }
+    catch {
+        return $null
+    }
+    return $null
+}
+
+function Find-ClaudeExeUnderDirectory {
+    param(
+        [string]$Root,
+        [int]$MaxDepth = 8
+    )
+
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root)) { return $null }
+    $match = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue -Depth $MaxDepth |
+        Where-Object {
+            $_.Name -ieq 'claude.exe' -and
+            $_.FullName -notmatch '(?i)\\claude-code\\' -and
+            $_.FullName -notmatch '(?i)\\node_modules\\'
+        } |
+        Sort-Object {
+            if ($_.FullName -match '(?i)\\app-\\') { 0 }
+            elseif ($_.FullName -match '(?i)\\Local\\Claude\\') { 1 }
+            else { 2 }
+        }, FullName -Descending |
+        Select-Object -First 1
+    if ($match) { return $match.FullName }
+    return $null
+}
+
+function Find-ClaudeFromAppxPackage {
+    param([ref]$SearchedPaths)
+
+    $packages = @(Get-AppxPackage -Name '*Claude*' -ErrorAction SilentlyContinue)
+    foreach ($pkg in $packages) {
+        if (-not $pkg.InstallLocation) { continue }
+        $SearchedPaths.Value = @($SearchedPaths.Value + $pkg.InstallLocation)
+
+        try {
+            [xml]$manifest = Get-AppxPackageManifest -Package $pkg
+            foreach ($app in @($manifest.Package.Applications.Application)) {
+                if (-not $app.Executable) { continue }
+                $exe = Join-Path $pkg.InstallLocation ($app.Executable -replace '/', '\')
+                $SearchedPaths.Value = @($SearchedPaths.Value + $exe)
+                $resolved = Resolve-ClaudeExeCandidate $exe
+                if ($resolved) { return $resolved }
+            }
+        }
+        catch {
+            # Manifest parsing can fail on partial installs; fall through to common layouts.
+        }
+
+        foreach ($relative in @('app\Claude.exe', 'app\claude.exe', 'Claude.exe', 'claude.exe')) {
+            $exe = Join-Path $pkg.InstallLocation $relative
+            $SearchedPaths.Value = @($SearchedPaths.Value + $exe)
+            $resolved = Resolve-ClaudeExeCandidate $exe
+            if ($resolved) { return $resolved }
+        }
+    }
+    return $null
+}
+
+function Find-ClaudeFromRegistry {
+    param([ref]$SearchedPaths)
+
+    $roots = @(
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        foreach ($key in (Get-ChildItem -Path $root -ErrorAction SilentlyContinue)) {
+            $props = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if (-not $props) { continue }
+            if ($props.PSObject.Properties.Name -notcontains 'DisplayName') { continue }
+            if ($props.DisplayName -notmatch '(?i)claude|anthropic') { continue }
+
+            $locationProps = @()
+            if ($props.PSObject.Properties.Name -contains 'InstallLocation') {
+                $locationProps += $props.InstallLocation
+            }
+            if ($props.PSObject.Properties.Name -contains 'DisplayIcon') {
+                $locationProps += $props.DisplayIcon
+            }
+            foreach ($location in ($locationProps | Where-Object { $_ })) {
+                $location = ($location -replace '(?i),.*$', '').Trim('"')
+                if (-not $location) { continue }
+
+                if ($location -match '(?i)claude\.exe$') {
+                    $candidateList = @($location)
+                }
+                else {
+                    $candidateList = @(
+                        (Join-Path $location 'Claude.exe')
+                        (Join-Path $location 'claude.exe')
+                        (Join-Path $location 'app\Claude.exe')
+                        (Join-Path $location 'app\claude.exe')
+                    )
+                }
+
+                foreach ($candidate in $candidateList) {
+                    $SearchedPaths.Value = @($SearchedPaths.Value + $candidate)
+                    $resolved = Resolve-ClaudeExeCandidate $candidate
+                    if ($resolved) { return $resolved }
+                }
+            }
+        }
+    }
+    return $null
+}
+
+function Find-ClaudeFromStartMenu {
+    param([ref]$SearchedPaths)
+
+    $menus = @(
+        (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu')
+        (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu')
+        [Environment]::GetFolderPath('StartMenu')
+        [Environment]::GetFolderPath('CommonStartMenu')
+    ) | Where-Object { $_ } | Select-Object -Unique
+    foreach ($menu in ($menus | Select-Object -Unique)) {
+        if (-not $menu -or -not (Test-Path -LiteralPath $menu)) { continue }
+        $SearchedPaths.Value = @($SearchedPaths.Value + $menu)
+        foreach ($shortcut in (Get-ChildItem -Path $menu -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)claude' })) {
+            $SearchedPaths.Value = @($SearchedPaths.Value + $shortcut.FullName)
+            $resolved = Resolve-ShortcutTargetPath $shortcut.FullName
+            if ($resolved) { return $resolved }
+        }
+    }
+    return $null
+}
+
 function Find-ClaudeDesktop {
-    if ($env:CLAUDE_LAUNCHERS_CLAUDE_EXE -and (Test-Path -LiteralPath $env:CLAUDE_LAUNCHERS_CLAUDE_EXE)) {
-        return (Resolve-Path -LiteralPath $env:CLAUDE_LAUNCHERS_CLAUDE_EXE).Path
+    $searched = @()
+
+    if ($env:CLAUDE_LAUNCHERS_CLAUDE_EXE) {
+        $searched += $env:CLAUDE_LAUNCHERS_CLAUDE_EXE
+        $resolved = Resolve-ClaudeExeCandidate $env:CLAUDE_LAUNCHERS_CLAUDE_EXE
+        if ($resolved) { return $resolved }
     }
 
     if ($env:CLAUDE_LAUNCHERS_TEST_MODE -eq '1') {
         $testExe = Join-Path $Script:LaunchersDir 'Claude\claude.exe'
-        if (Test-Path -LiteralPath $testExe) {
-            return (Resolve-Path -LiteralPath $testExe).Path
-        }
+        $searched += $testExe
+        $resolved = Resolve-ClaudeExeCandidate $testExe
+        if ($resolved) { return $resolved }
     }
 
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Claude\Claude.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\Claude\claude.exe')
+        (Join-Path $env:LOCALAPPDATA 'AnthropicClaude\Claude.exe')
         (Join-Path $env:LOCALAPPDATA 'AnthropicClaude\claude.exe')
-        (Join-Path ${env:ProgramFiles} 'Claude\Claude.exe')
-        (Join-Path ${env:ProgramFiles(x86)} 'Claude\Claude.exe')
+        (Join-Path (Get-SafeProgramFiles) 'Claude\Claude.exe')
+        (Join-Path (Get-SafeProgramFiles) 'Claude\claude.exe')
+        (Join-Path (Get-SafeProgramFilesX86) 'Claude\Claude.exe')
+        (Join-Path (Get-SafeProgramFilesX86) 'Claude\claude.exe')
     )
     foreach ($path in $candidates) {
-        if (Test-Path -LiteralPath $path) {
-            return (Resolve-Path -LiteralPath $path).Path
-        }
+        $searched += $path
+        $resolved = Resolve-ClaudeExeCandidate $path
+        if ($resolved) { return $resolved }
     }
 
-    $packages = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Filter 'Claude_*' -Directory -ErrorAction SilentlyContinue
+    $packagesRoot = Join-Path $env:LOCALAPPDATA 'Packages'
+    $searched += (Join-Path $packagesRoot 'Claude_*')
+    $packages = Get-ChildItem -Path $packagesRoot -Filter 'Claude_*' -Directory -ErrorAction SilentlyContinue
     foreach ($pkg in $packages) {
         $patterns = @(
             (Join-Path $pkg.FullName 'LocalCache\Local\Claude\app-*\claude.exe')
+            (Join-Path $pkg.FullName 'LocalCache\Local\Claude\app-*\Claude.exe')
             (Join-Path $pkg.FullName 'LocalCache\Local\Claude\claude.exe')
+            (Join-Path $pkg.FullName 'LocalCache\Local\Claude\Claude.exe')
         )
         foreach ($pattern in $patterns) {
+            $searched += $pattern
             $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue |
                 Sort-Object FullName -Descending |
                 Select-Object -First 1
@@ -213,18 +390,92 @@ function Find-ClaudeDesktop {
         }
     }
 
-    $cmd = Get-Command Claude.exe -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source) { return $cmd.Source }
+    $appxPath = $null
+    if ($env:CLAUDE_LAUNCHERS_TEST_MODE -ne '1') {
+        $appxPath = Find-ClaudeFromAppxPackage ([ref]$searched)
+    }
+    if ($appxPath) { return $appxPath }
 
+    $windowsAppsRoot = Join-Path (Get-SafeProgramFiles) 'WindowsApps'
+    $searched += (Join-Path $windowsAppsRoot 'Claude_*')
+    foreach ($pkgDir in (Get-ChildItem -Path $windowsAppsRoot -Filter 'Claude_*' -Directory -ErrorAction SilentlyContinue)) {
+        foreach ($relative in @('app\Claude.exe', 'app\claude.exe', 'Claude.exe', 'claude.exe')) {
+            $exe = Join-Path $pkgDir.FullName $relative
+            $searched += $exe
+            $resolved = Resolve-ClaudeExeCandidate $exe
+            if ($resolved) { return $resolved }
+        }
+        $searched += $pkgDir.FullName
+        $nested = Find-ClaudeExeUnderDirectory -Root $pkgDir.FullName -MaxDepth 4
+        if ($nested) { return $nested }
+    }
+
+    foreach ($pkg in $packages) {
+        $searched += $pkg.FullName
+        $nested = Find-ClaudeExeUnderDirectory -Root $pkg.FullName -MaxDepth 8
+        if ($nested) { return $nested }
+    }
+
+    $startMenuPath = Find-ClaudeFromStartMenu ([ref]$searched)
+    if ($startMenuPath) { return $startMenuPath }
+
+    $registryPath = Find-ClaudeFromRegistry ([ref]$searched)
+    if ($registryPath) { return $registryPath }
+
+    $aliasDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    $searched += $aliasDir
+    foreach ($aliasFile in (Get-ChildItem -Path $aliasDir -Filter 'Claude.exe' -File -ErrorAction SilentlyContinue)) {
+        $searched += $aliasFile.FullName
+        $resolved = Resolve-ClaudeExeCandidate $aliasFile.FullName
+        if ($resolved) { return $resolved }
+    }
+    foreach ($aliasFile in (Get-ChildItem -Path $aliasDir -Filter 'claude.exe' -File -ErrorAction SilentlyContinue)) {
+        $searched += $aliasFile.FullName
+        $resolved = Resolve-ClaudeExeCandidate $aliasFile.FullName
+        if ($resolved) { return $resolved }
+    }
+
+    if ($env:CLAUDE_LAUNCHERS_TEST_MODE -ne '1') {
+        foreach ($commandName in @('Claude.exe', 'claude.exe', 'Claude')) {
+            $whereMatches = @(where.exe $commandName 2>$null)
+            foreach ($whereMatch in $whereMatches) {
+                $searched += $whereMatch
+                $resolved = Resolve-ClaudeExeCandidate $whereMatch
+                if ($resolved) { return $resolved }
+            }
+        }
+
+        foreach ($commandName in @('Claude.exe', 'claude.exe')) {
+            $cmd = Get-Command $commandName -ErrorAction SilentlyContinue
+            if ($cmd -and $cmd.Source) {
+                $searched += $cmd.Source
+                $resolved = Resolve-ClaudeExeCandidate $cmd.Source
+                if ($resolved) { return $resolved }
+            }
+        }
+    }
+
+    $Script:ClaudeSearchPaths = @($searched | Select-Object -Unique)
     return $null
 }
 
 function Write-ClaudeNotInstalledError {
+    $searched = @($Script:ClaudeSearchPaths | Select-Object -Unique)
+    $searchedLines = if ($searched.Count -gt 0) {
+        ($searched | ForEach-Object { "    - $_" }) -join "`n"
+    }
+    else {
+        '    - (no search paths recorded)'
+    }
+
     Write-Error @"
 ERROR: Claude Desktop is not installed (or could not be found).
 
   Install Claude Desktop from https://claude.ai/download
   Then re-run this script.
+
+  Paths searched:
+$searchedLines
 
   If Claude is already installed in a non-standard location, point this script at it:
     `$env:CLAUDE_LAUNCHERS_CLAUDE_EXE = 'C:\Path\To\Claude.exe'

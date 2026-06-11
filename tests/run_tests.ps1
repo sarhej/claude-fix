@@ -65,6 +65,7 @@ function Test-NotInstalledCreateFails {
     Assert-Equal '1' "$($result.ExitCode)" 'exits 1'
     Assert-Contains $result.Output 'Claude Desktop is not installed' 'meaningful error'
     Assert-Contains $result.Output 'claude.ai/download' 'includes download link'
+    Assert-Contains $result.Output 'Paths searched:' 'lists searched paths'
     Remove-Sandbox
 }
 
@@ -446,6 +447,94 @@ function Test-MsixPathDiscovery {
     Remove-Sandbox
 }
 
+function Test-MsixNestedRecursiveDiscovery {
+    Start-Test 'MSIX nested package path is discovered via recursive search'
+    Initialize-Sandbox
+    $exe = New-MockClaudeMsixNested
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds nested MSIX Claude.exe'
+    Remove-Sandbox
+}
+
+function Test-ProgramsClaudeDiscovery {
+    Start-Test 'Programs\Claude\Claude.exe path is discovered'
+    Initialize-Sandbox
+    $exe = New-MockClaudePrograms
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds Programs install layout'
+    Remove-Sandbox
+}
+
+function Test-WindowsAppsDiscovery {
+    Start-Test 'WindowsApps Claude_* app layout is discovered'
+    Initialize-Sandbox
+    $exe = New-MockClaudeWindowsApps
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds WindowsApps install layout'
+    Remove-Sandbox
+}
+
+function Test-WindowsAppsAliasDiscovery {
+    Start-Test 'WindowsApps execution alias stub is discovered'
+    Initialize-Sandbox
+    $exe = New-MockClaudeWindowsAppsAlias
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds WindowsApps alias path'
+    Remove-Sandbox
+}
+
+function Test-StartMenuShortcutDiscovery {
+    Start-Test 'Start Menu Claude shortcut target is resolved'
+    Initialize-Sandbox
+    $exeRoot = Join-Path $env:LOCALAPPDATA 'HiddenClaude\app'
+    New-Item -ItemType Directory -Path $exeRoot -Force | Out-Null
+    $exe = Join-Path $exeRoot 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-hidden' -Encoding ASCII
+    New-MockClaudeStartMenuShortcut -TargetExe $exe | Out-Null
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds Claude via Start Menu shortcut'
+    Remove-Sandbox
+}
+
+function Test-RegistryInstallLocationDiscovery {
+    Start-Test 'registry InstallLocation is used for Claude discovery'
+    Initialize-Sandbox
+    $root = Join-Path $env:LOCALAPPDATA 'RegistryClaude'
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $exe = Join-Path $root 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-registry' -Encoding ASCII
+    New-MockClaudeRegistryInstall -InstallRoot $root | Out-Null
+    $found = Invoke-FindClaudeDesktopInSandbox
+    Assert-Equal $exe $found 'finds Claude via registry InstallLocation'
+    Remove-Sandbox
+}
+
+function Test-RealMachineClaudeDetectionSmoke {
+    Start-Test 'real machine: Find-ClaudeDesktop without env override'
+    if (-not $env:ProgramFiles) {
+        $env:ProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
+    }
+    if (-not ${env:ProgramFiles(x86)}) {
+        Set-Item -Path 'Env:ProgramFiles(x86)' -Value ([Environment]::GetFolderPath('ProgramFilesX86'))
+    }
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    Remove-Item Env:CLAUDE_LAUNCHERS_TEST_MODE -ErrorAction SilentlyContinue
+    . $Script:ScriptPath
+    $found = Find-ClaudeDesktop
+    $appx = @(Get-AppxPackage -Name '*Claude*' -ErrorAction SilentlyContinue)
+    if ($found) {
+        Assert-True "found Claude at $found" { Test-Path -LiteralPath $found }
+    }
+    elseif ($appx.Count -gt 0) {
+        $Script:TestsFailed++
+        Write-Error "  FAIL: Claude appx installed ($($appx[0].PackageFullName)) but Find-ClaudeDesktop returned null"
+    }
+    else {
+        $Script:TestsPassed++
+        Write-Host '  PASS: Claude not installed on this machine (skipped real-path assertion)'
+    }
+}
+
 function Test-CleanRemovesGeneratedLaunchers {
     Start-Test 'clean removes generated launchers'
     Initialize-Sandbox
@@ -601,6 +690,12 @@ Test-CreateRebuildsLauncherOnly
 Test-LabelValidation
 Test-QuotedClaudePaths
 Test-MsixPathDiscovery
+Test-MsixNestedRecursiveDiscovery
+Test-ProgramsClaudeDiscovery
+Test-WindowsAppsDiscovery
+Test-WindowsAppsAliasDiscovery
+Test-StartMenuShortcutDiscovery
+Test-RegistryInstallLocationDiscovery
 Test-CleanRemovesGeneratedLaunchers
 Test-CleanKeepsProfileData
 Test-CleanSafety
@@ -609,5 +704,6 @@ Test-CleanPurge
 Test-CleanPurgeNeverTargetsPlainClaude
 Test-FullLifecycle
 Test-UnsafeLabelRejected
+Test-RealMachineClaudeDetectionSmoke
 
 exit (Show-Summary)

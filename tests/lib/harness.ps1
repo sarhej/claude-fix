@@ -143,14 +143,22 @@ function Initialize-Sandbox {
     $Script:Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("claude-fix-test-{0}" -f [guid]::NewGuid().ToString('N'))
     $Script:SandboxHome = Join-Path $Script:Sandbox 'home'
     $localAppData = Join-Path $Script:SandboxHome 'AppData\Local'
+    $roamingAppData = Join-Path $Script:SandboxHome 'AppData\Roaming'
+    $programData = Join-Path $Script:SandboxHome 'ProgramData'
     $desktop = Join-Path $Script:SandboxHome 'Desktop'
     New-Item -ItemType Directory -Path (Join-Path $Script:SandboxHome 'Applications') -Force | Out-Null
     New-Item -ItemType Directory -Path $localAppData -Force | Out-Null
+    New-Item -ItemType Directory -Path $roamingAppData -Force | Out-Null
+    New-Item -ItemType Directory -Path $programData -Force | Out-Null
     New-Item -ItemType Directory -Path $desktop -Force | Out-Null
 
     $env:USERPROFILE = $Script:SandboxHome
     $env:HOME = $Script:SandboxHome
     $env:LOCALAPPDATA = $localAppData
+    $env:APPDATA = $roamingAppData
+    $env:ProgramData = $programData
+    $env:ProgramFiles = Join-Path $Script:SandboxHome 'Program Files'
+    Set-Item -Path 'Env:ProgramFiles(x86)' -Value (Join-Path $Script:SandboxHome 'Program Files (x86)')
     $env:CLAUDE_LAUNCHERS_DESKTOP = $desktop
     $env:CLAUDE_LAUNCHERS_NO_OPEN = '1'
     $env:CLAUDE_LAUNCHERS_TEST_MODE = '1'
@@ -167,10 +175,15 @@ function Initialize-Sandbox {
 
 function Remove-Sandbox {
     Stop-MockClaudeProcess
+    Remove-MockClaudeRegistryInstall
     if ($Script:Sandbox -and (Test-Path -LiteralPath $Script:Sandbox)) {
         Remove-Item -LiteralPath $Script:Sandbox -Recurse -Force -ErrorAction SilentlyContinue
     }
     Remove-Item Env:CLAUDE_LAUNCHERS_DESKTOP -ErrorAction SilentlyContinue
+    Remove-Item Env:APPDATA -ErrorAction SilentlyContinue
+    Remove-Item Env:ProgramData -ErrorAction SilentlyContinue
+    Remove-Item Env:ProgramFiles -ErrorAction SilentlyContinue
+    Remove-Item 'Env:ProgramFiles(x86)' -ErrorAction SilentlyContinue
     Remove-Variable -Name Sandbox -Scope Script -ErrorAction SilentlyContinue
     Remove-Variable -Name SandboxHome -Scope Script -ErrorAction SilentlyContinue
     Remove-Variable -Name MockClaudeProcess -Scope Script -ErrorAction SilentlyContinue
@@ -196,6 +209,91 @@ function New-MockClaudeMsix {
     Set-Content -LiteralPath $exe -Value 'mock-msix' -Encoding ASCII
     Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
     return $exe
+}
+
+function New-MockClaudeMsixNested {
+    param([string]$PackageId = 'Claude_nested123')
+
+    $pkgRoot = Join-Path $env:LOCALAPPDATA "Packages\$PackageId"
+    $exeDir = Join-Path $pkgRoot 'LocalCache\Roaming\Anthropic\Claude\app-9.9.9\resources'
+    New-Item -ItemType Directory -Path $exeDir -Force | Out-Null
+    $exe = Join-Path $exeDir 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-msix-nested' -Encoding ASCII
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $exe
+}
+
+function New-MockClaudePrograms {
+    $root = Join-Path $env:LOCALAPPDATA 'Programs\Claude'
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $exe = Join-Path $root 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-programs' -Encoding ASCII
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $exe
+}
+
+function New-MockClaudeWindowsApps {
+    param([string]$PackageId = 'Claude_testpkg_x64__abc')
+
+    $root = Join-Path $env:ProgramFiles "WindowsApps\$PackageId\app"
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $exe = Join-Path $root 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-windowsapps' -Encoding ASCII
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $exe
+}
+
+function New-MockClaudeWindowsAppsAlias {
+    $aliasDir = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+    New-Item -ItemType Directory -Path $aliasDir -Force | Out-Null
+    $exe = Join-Path $aliasDir 'Claude.exe'
+    Set-Content -LiteralPath $exe -Value 'mock-alias' -Encoding ASCII
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $exe
+}
+
+function New-MockClaudeStartMenuShortcut {
+    param([string]$TargetExe)
+
+    $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    New-Item -ItemType Directory -Path $menu -Force | Out-Null
+    $shortcut = Join-Path $menu 'Claude.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($shortcut)
+    $link.TargetPath = $TargetExe
+    $link.Save()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($link) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $shortcut
+}
+
+function New-MockClaudeRegistryInstall {
+    param([string]$InstallRoot)
+
+    $keyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClaudeFixTestClaude'
+    if (Test-Path -LiteralPath $keyPath) {
+        Remove-Item -LiteralPath $keyPath -Recurse -Force
+    }
+    New-Item -Path $keyPath -Force | Out-Null
+    New-ItemProperty -Path $keyPath -Name 'DisplayName' -Value 'Claude' -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $keyPath -Name 'InstallLocation' -Value $InstallRoot -PropertyType String -Force | Out-Null
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    return $keyPath
+}
+
+function Remove-MockClaudeRegistryInstall {
+    $keyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClaudeFixTestClaude'
+    if (Test-Path -LiteralPath $keyPath) {
+        Remove-Item -LiteralPath $keyPath -Recurse -Force
+    }
+}
+
+function Invoke-FindClaudeDesktopInSandbox {
+    Remove-Item Env:CLAUDE_LAUNCHERS_CLAUDE_EXE -ErrorAction SilentlyContinue
+    $env:CLAUDE_LAUNCHERS_TEST_MODE = '1'
+    . $Script:ScriptPath
+    return Find-ClaudeDesktop
 }
 
 function New-MockClaudeRunnable {
