@@ -28,8 +28,9 @@ integrations. Launchers can be **pinned to the Dock** with **distinct icons**
 curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
 ```
 
-For colored Dock icons, clone this repo and run `./make_claude_launchers.sh` from
-the project folder (see [Installation](#installation)).
+Colored Dock icons download automatically to `~/.claude-fix/icons` on first run
+(even with the one-line `curl` install). Cloning the repo also works and skips
+re-download when `icons/` is present locally.
 
 ---
 
@@ -528,7 +529,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (73 tests). Run it directly —
+The suite takes about **30–60 seconds** on macOS (74 tests). Run it directly —
 piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
@@ -554,7 +555,7 @@ Progress is mirrored to stderr when stdout is piped.
 | **Input hardening** | Empty/whitespace labels, max 50 chars, 51 rejected, `.` `/` `:`, duplicates, trim, case |
 | **Special labels** | Apostrophe, hyphen, underscore in display names; unicode accepted |
 | **Profile icons** | `Assets.car` removed; Work/Personal symbol icons; custom labels get letter badge |
-| **Icon fallback** | Missing `icons/` dir; `CLAUDE_LAUNCHERS_ICONS_DIR` override; Swift generator failure |
+| **Icon fallback** | Auto-download to `~/.claude-fix/icons`; override dir/cache; Swift generator failure |
 | **Dock** | `--dock` / `--no-dock`, 1/2/3 launchers, idempotent pinning, stale-pin repair |
 | **Dock cleanup** | `--dock-cleanup` removes duplicate `Claude.app` pins only |
 | **Dock safety** | `dock_changes_disabled` in test mode without mock plist; URL encoding for spaces |
@@ -574,6 +575,17 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.1.1 — 2026-06-12
+
+**Curl install includes colored icons**
+
+- One-line `curl | bash` now downloads `icons/` from GitHub into
+  `~/.claude-fix/icons` (cached; only missing files are fetched)
+- Custom profile letter badges use the downloaded `generate_icons.swift`
+- Override cache: `CLAUDE_LAUNCHERS_ICONS_CACHE` or `CLAUDE_LAUNCHERS_ICONS_DIR`
+
+---
 
 ### v1.1.0 — 2026-06-12
 
@@ -610,11 +622,10 @@ utility into something your whole team can actually use from the Dock.
 - Expanded from 52 → **73 tests** (249 assertions), including edge cases for
   labels, icons, Dock encoding, management menu, and profile-data safety
 
-#### Install note
+#### Install note (v1.1.1)
 
-Clone the repo (or download with `icons/`) for colored profile icons. The
-one-line `curl | bash` install still works for launchers; set
-`CLAUDE_LAUNCHERS_ICONS_DIR` if `icons/` lives elsewhere.
+The one-line `curl | bash` install now **downloads profile icons automatically**
+to `~/.claude-fix/icons` on first run. No clone required for colored Dock icons.
 
 ---
 

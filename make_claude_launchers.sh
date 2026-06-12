@@ -31,8 +31,64 @@ script_dir() {
   cd "$(dirname "$src")" && pwd
 }
 
+icons_cache_dir() {
+  printf '%s' "${CLAUDE_LAUNCHERS_ICONS_CACHE:-$HOME/.claude-fix/icons}"
+}
+
+icons_raw_base() {
+  printf '%s' "${CLAUDE_LAUNCHERS_ICONS_BASE:-https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/icons}"
+}
+
+icons_cache_ready() {
+  local cache
+  cache=$(icons_cache_dir)
+  [ -f "$cache/profile-0.icns" ] && [ -f "$cache/profile-1.icns" ] && [ -f "$cache/generate_icons.swift" ]
+}
+
+icon_download_disabled() {
+  [ "${CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD:-}" = "1" ] && return 0
+  [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && [ "${CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD:-}" != "1" ] && return 0
+  return 1
+}
+
+download_icons_to_cache() {
+  local cache base i name
+  cache=$(icons_cache_dir)
+  base=$(icons_raw_base)
+  mkdir -p "$cache"
+  for ((i = 0; i < ICON_COUNT; i++)); do
+    name="profile-${i}.icns"
+    if [ ! -f "$cache/$name" ]; then
+      curl -fsSL "${base}/${name}" -o "$cache/$name" || return 1
+    fi
+  done
+  if [ ! -f "$cache/generate_icons.swift" ]; then
+    curl -fsSL "${base}/generate_icons.swift" -o "$cache/generate_icons.swift" || return 1
+  fi
+  return 0
+}
+
+ensure_icons_available() {
+  if icons_dir >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "${CLAUDE_LAUNCHERS_ICONS_DIR:-}" ]; then
+    return 1
+  fi
+  if icon_download_disabled; then
+    return 1
+  fi
+  echo "Downloading profile icons to $(icons_cache_dir)..."
+  if download_icons_to_cache && icons_dir >/dev/null 2>&1; then
+    echo "  profile icons ready"
+    return 0
+  fi
+  echo "NOTE: could not download profile icons (check network or try again later)." >&2
+  return 1
+}
+
 icons_dir() {
-  local base
+  local base cache
   if [ -n "${CLAUDE_LAUNCHERS_ICONS_DIR:-}" ]; then
     [ -d "$CLAUDE_LAUNCHERS_ICONS_DIR" ] || return 1
     printf '%s' "$CLAUDE_LAUNCHERS_ICONS_DIR"
@@ -40,6 +96,11 @@ icons_dir() {
   fi
   if base=$(script_dir 2>/dev/null) && [ -d "$base/icons" ]; then
     printf '%s/icons' "$base"
+    return 0
+  fi
+  if icons_cache_ready; then
+    cache=$(icons_cache_dir)
+    printf '%s' "$cache"
     return 0
   fi
   return 1
@@ -757,6 +818,7 @@ start_fresh_generated_profile_by_index() {
       echo
       require_tools osacompile osascript
       if ensure_claude_app; then
+        ensure_icons_available >/dev/null 2>&1 || true
         echo "Rebuilding launcher for Claude $label..."
         if ! make_launcher "$label" 0; then
           echo "NOTE: Could not rebuild launcher for Claude $label." >&2
@@ -964,7 +1026,8 @@ Examples:
 Note:
   Your normal Claude.app keeps its current login. Generated launchers use
   original profile icons (not affiliated with Anthropic) and open isolated
-  profiles via --user-data-dir.
+  profiles via --user-data-dir. On curl install, icons download to
+  ~/.claude-fix/icons automatically.
 MSG
 }
 
@@ -1335,9 +1398,9 @@ $dir
   fi
   echo "Found Claude at: $CLAUDE_APP"
 
-  if ! icons_dir >/dev/null 2>&1; then
-    echo "NOTE: profile icons not found - launchers will use the default applet icon."
-    echo "       Run from a cloned repo (or set CLAUDE_LAUNCHERS_ICONS_DIR) for colored profile icons."
+  if ! ensure_icons_available; then
+    echo "NOTE: profile icons unavailable - launchers will use the default applet icon."
+    echo "       Icons are downloaded automatically on curl install; retry when online or clone the repo."
   fi
 
   if [ -n "$EXISTING_PROFILE_LABEL" ] && [ "${#LABELS[@]}" -eq 1 ]; then

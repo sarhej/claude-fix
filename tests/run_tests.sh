@@ -630,7 +630,7 @@ test_create_without_icons_dir() {
   export CLAUDE_LAUNCHERS_ICONS_DIR="$SANDBOX/missing-icons"
   local out
   out="$(capture_script create Work 2>&1)"
-  assert_contains "$out" "profile icons not found" "warns about missing icons dir"
+  assert_contains "$out" "profile icons unavailable" "warns about missing icons dir"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/MacOS/applet" "launcher still created"
   assert_file_missing "$HOME/Applications/Claude Work.app/Contents/Resources/Assets.car" "Assets.car still removed"
   teardown_sandbox
@@ -864,6 +864,34 @@ test_label_unicode_allowed() {
   create_mock_claude >/dev/null
   capture_script create "Café" >/dev/null
   assert_file_exists "$HOME/Applications/Claude Café.app" "unicode label accepted"
+  teardown_sandbox
+}
+
+test_icons_download_to_cache() {
+  test_start "curl-style install downloads icons into cache when repo icons absent"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  mkdir -p "$SANDBOX/icon-src"
+  cp "$REPO_ROOT/icons/profile-"*.icns "$SANDBOX/icon-src/"
+  cp "$REPO_ROOT/icons/generate_icons.swift" "$SANDBOX/icon-src/"
+  # Simulate curl | bash: run a copy of the script with no sibling icons/ folder.
+  cp "$SCRIPT" "$SANDBOX/make_claude_launchers.sh"
+  local saved_script="$SCRIPT"
+  SCRIPT="$SANDBOX/make_claude_launchers.sh"
+  unset CLAUDE_LAUNCHERS_ICONS_DIR
+  export CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD=1
+  export CLAUDE_LAUNCHERS_ICONS_BASE="file://$SANDBOX/icon-src"
+  export CLAUDE_LAUNCHERS_ICONS_CACHE="$SANDBOX/icon-cache"
+  local out work_hash palette_hash
+  out="$(capture_script create Work 2>&1)"
+  SCRIPT="$saved_script"
+  assert_contains "$out" "Downloading profile icons" "reports icon download"
+  assert_contains "$out" "profile icons ready" "icons download succeeded"
+  assert_file_exists "$SANDBOX/icon-cache/profile-0.icns" "cached profile-0"
+  assert_file_exists "$SANDBOX/icon-cache/generate_icons.swift" "cached swift generator"
+  work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  palette_hash="$(shasum -a 256 "$SANDBOX/icon-cache/profile-0.icns" | awk '{print $1}')"
+  assert_eq "$palette_hash" "$work_hash" "Work launcher uses downloaded icon"
   teardown_sandbox
 }
 
@@ -1215,6 +1243,7 @@ main() {
   test_clean_purge
   test_clean_purge_never_targets_plain_claude_app
   test_full_lifecycle
+  test_icons_download_to_cache
   test_icons_dir_override
   test_work_personal_icons_match_palette
   test_generate_icons_swift_failure_graceful
