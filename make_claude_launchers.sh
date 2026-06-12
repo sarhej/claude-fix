@@ -538,7 +538,7 @@ pin_launchers_to_dock() {
   local plist claude_app removed=0
   local pinned=0 already=0 repaired=0 failed=0
   local app base changed=0
-  local results_json line status reason
+  local results_json status reason
 
   if dock_changes_disabled; then
     return 0
@@ -1189,9 +1189,44 @@ maybe_open_after_start_fresh() {
   fi
 }
 
+refresh_generated_launcher_icons() {
+  local i label
+  load_generated_launchers
+  [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 0
+  if ! icons_dir >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! ensure_claude_app >/dev/null 2>&1; then
+    return 0
+  fi
+  require_tools osacompile osascript
+  echo "Refreshing launcher icons for ${#GENERATED_LABELS[@]} profile(s)..."
+  for ((i = 0; i < ${#GENERATED_LABELS[@]}; i++)); do
+    label="${GENERATED_LABELS[$i]}"
+    if make_launcher "$label" 0; then
+      echo "  -> Claude $label"
+    else
+      echo "  -> Claude $label (skipped)" >&2
+    fi
+  done
+}
+
 create_setup() {
   require_tools osacompile osascript
   mkdir -p "$APPS"
+
+  local had_icons=0
+  if icons_dir >/dev/null 2>&1; then
+    had_icons=1
+  fi
+  if ensure_icons_available; then
+    if [ "$had_icons" = "0" ]; then
+      load_generated_launchers
+      if [ "${#GENERATED_LABELS[@]}" -gt 0 ]; then
+        refresh_generated_launcher_icons
+      fi
+    fi
+  fi
 
   local DESKTOP_ALIASES=0
   local LAUNCH_AFTER_CREATE=0
@@ -1398,7 +1433,7 @@ $dir
   fi
   echo "Found Claude at: $CLAUDE_APP"
 
-  if ! ensure_icons_available; then
+  if ! icons_dir >/dev/null 2>&1; then
     echo "NOTE: profile icons unavailable - launchers will use the default applet icon."
     echo "       Icons are downloaded automatically on curl install; retry when online or clone the repo."
   fi

@@ -795,11 +795,12 @@ test_label_max_length_and_rejections() {
   test_start "labels reject length 51+, leading dot, colon"
   setup_sandbox
   create_mock_claude >/dev/null
-  local ok_label="$(printf 'A%.0s' {1..50})"
+  local ok_label long_label
+  ok_label="$(printf 'A%.0s' {1..50})"
   capture_script create "$ok_label" >/dev/null
   assert_file_exists "$HOME/Applications/Claude $ok_label.app" "50-char label accepted"
 
-  local long_label="$(printf 'B%.0s' {1..51})"
+  long_label="$(printf 'B%.0s' {1..51})"
   set +e
   local out code
   out="$(capture_script create "$long_label" 2>&1)"
