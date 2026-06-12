@@ -25,7 +25,7 @@ test_slug_mapping() {
 }
 
 test_help() {
-  test_start "help prints usage and Dock limitation"
+  test_start "help prints usage and Dock options"
   setup_sandbox
   local out
   out="$(capture_script help)"
@@ -33,8 +33,10 @@ test_help() {
   assert_contains "$out" "clean --purge" "documents purge"
   assert_contains "$out" "--desktop" "documents Desktop shortcuts option"
   assert_contains "$out" "--launch" "documents launch option"
+  assert_contains "$out" "--dock" "documents Dock pinning option"
+  assert_contains "$out" "--dock-cleanup" "documents Dock cleanup option"
   assert_contains "$out" "existing Claude login" "documents existing profile model"
-  assert_contains "$out" "same-looking Claude Dock icons" "documents Dock icon limitation"
+  assert_contains "$out" "original profile icons" "documents icon policy"
   teardown_sandbox
 }
 
@@ -265,20 +267,122 @@ test_management_menu_create_another_profile() {
   teardown_sandbox
 }
 
+test_management_menu_create_pins_to_dock() {
+  test_start "management menu create can pin new launcher to Dock"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  create_generated_launcher "Personal"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=4
+  export CLAUDE_LAUNCHERS_NEW_PROFILE_NAMES="ClientA"
+  export CLAUDE_LAUNCHERS_DOCK_ANSWER=y
+  export CLAUDE_LAUNCHERS_FROM_MANAGEMENT=1
+  local out urls client_url
+  out="$(capture_script create)"
+  assert_contains "$out" "Creating 1 launcher(s)" "creates requested extra profile"
+  assert_contains "$out" "Dock: pinned Claude ClientA.app" "reports new Dock pin"
+  assert_contains "$out" "Dock: pinned 1 launcher(s)" "summarizes Dock pinning"
+  client_url="$(dock_file_url_via_script "$HOME/Applications/Claude ClientA.app")"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$client_url" "ClientA launcher pinned"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "Dock entries use native tile structure"
+  teardown_sandbox
+}
+
 test_management_menu_start_fresh_profile() {
   test_start "management menu can clear local sign-in for generated profile"
   setup_sandbox
-  create_generated_launcher "Personal"
-  local data="$HOME/ClaudePersonal"
+  create_mock_claude >/dev/null
+  capture_script create DRD >/dev/null
+  local data="$HOME/ClaudeDrd"
   mkdir -p "$data"
   printf '{"oauth:tokenCache":"stale"}\n' >"$data/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
+  export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
+  export CLAUDE_LAUNCHERS_DOCK_ANSWER=n
   local out
   out="$(capture_script create)"
   assert_contains "$out" "does NOT delete your Claude account" "uses safe wording"
-  assert_contains "$out" "cleared local sign-in for Claude Personal" "clears local sign-in"
+  assert_contains "$out" "cleared local sign-in for Claude DRD" "clears local sign-in"
+  assert_contains "$out" "Rebuilding launcher for Claude DRD" "rebuilds launcher after clear"
   assert_file_missing "$data" "local profile directory removed"
+  teardown_sandbox
+}
+
+test_start_fresh_rebuilds_launcher() {
+  test_start "start fresh rebuilds launcher app with profile icon"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create DRD >/dev/null
+  local app="$HOME/Applications/Claude DRD.app"
+  echo "stale" >"$app/stale-marker.txt"
+  touch "$app/Contents/Resources/Assets.car"
+  mkdir -p "$HOME/ClaudeDrd"
+  printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
+  export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
+  export CLAUDE_LAUNCHERS_DOCK_ANSWER=n
+  capture_script create >/dev/null
+  assert_file_missing "$app/stale-marker.txt" "launcher rebuilt"
+  assert_file_missing "$app/Contents/Resources/Assets.car" "Assets.car removed"
+  assert_file_exists "$app/Contents/Resources/applet.icns" "profile icon installed"
+  assert_file_exists "$app/Contents/MacOS/applet" "launcher still valid"
+  teardown_sandbox
+}
+
+test_start_fresh_repins_dock() {
+  test_start "start fresh refreshes Dock pin when launcher already pinned"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock DRD >/dev/null
+  local app="$HOME/Applications/Claude DRD.app"
+  local drd_url
+  drd_url="$(dock_file_url_via_script "$app")"
+  mkdir -p "$HOME/ClaudeDrd"
+  printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
+  export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
+  local out urls
+  out="$(capture_script create)"
+  assert_contains "$out" "Rebuilding launcher for Claude DRD" "rebuilds launcher after clear"
+  assert_contains "$out" "Updating Dock" "refreshes Dock after rebuild"
+  assert_contains "$out" "Dock: pinned Claude DRD.app" "re-pins launcher after rebuild"
+  assert_not_contains "$out" "Dock: all launcher(s) already pinned" "does not skip with stale pin"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$drd_url" "DRD launcher still pinned"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "Dock entries use native tile structure"
+  teardown_sandbox
+}
+
+test_start_fresh_pins_dock_when_not_pinned() {
+  test_start "start fresh pins Dock even when launcher was not previously pinned"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create DRD >/dev/null
+  local app="$HOME/Applications/Claude DRD.app"
+  local drd_url
+  drd_url="$(dock_file_url_via_script "$app")"
+  mkdir -p "$HOME/ClaudeDrd"
+  printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
+  export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
+  local out urls before_count after_count
+  before_count="$(dock_persistent_urls | grep -c "$drd_url" || true)"
+  assert_eq "0" "$before_count" "DRD not pinned before start fresh"
+  out="$(capture_script create)"
+  assert_contains "$out" "Updating Dock" "updates Dock after rebuild"
+  assert_contains "$out" "Dock: pinned Claude DRD.app" "pins launcher after start fresh"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$drd_url" "DRD launcher pinned"
+  after_count="$(printf '%s\n' "$urls" | grep -c "$drd_url" || true)"
+  assert_eq "1" "$after_count" "exactly one DRD Dock pin"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "Dock entries use native tile structure"
   teardown_sandbox
 }
 
@@ -328,17 +432,157 @@ test_onboarding_reset_profile_data() {
   teardown_sandbox
 }
 
-test_launcher_uses_normal_claude_icon() {
-  test_start "launchers copy the normal Claude icon when available"
+test_launcher_removes_assets_car() {
+  test_start "launchers remove Assets.car after osacompile"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  assert_file_missing "$HOME/Applications/Claude Work.app/Contents/Resources/Assets.car" "Assets.car removed"
+  teardown_sandbox
+}
+
+test_launcher_profile_icons_distinct() {
+  test_start "Work and Personal launchers get distinct profile icons"
   setup_sandbox
   create_mock_claude >/dev/null
   capture_script create Work Personal >/dev/null
-  local source_hash work_hash personal_hash
-  source_hash="$(shasum -a 256 "$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns" | awk '{print $1}')"
+  local work_hash personal_hash claude_hash
   work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
   personal_hash="$(shasum -a 256 "$HOME/Applications/Claude Personal.app/Contents/Resources/applet.icns" | awk '{print $1}')"
-  assert_eq "$source_hash" "$work_hash" "Work launcher uses source icon"
-  assert_eq "$source_hash" "$personal_hash" "Personal launcher uses source icon"
+  claude_hash="$(shasum -a 256 "$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns" | awk '{print $1}')"
+  assert_ne "$work_hash" "$personal_hash" "Work and Personal icons differ"
+  assert_ne "$work_hash" "$claude_hash" "Work icon is not copied from Claude.app"
+  assert_ne "$personal_hash" "$claude_hash" "Personal icon is not copied from Claude.app"
+  teardown_sandbox
+}
+
+test_profile_icon_assignment_deterministic() {
+  test_start "profile icon assignment is deterministic"
+  setup_sandbox
+  assert_eq "0" "$(profile_icon_index_via_script "Work")" "Work maps to profile-0"
+  assert_eq "1" "$(profile_icon_index_via_script "Personal")" "Personal maps to profile-1"
+  assert_eq "W" "$(profile_icon_letter_via_script "Work")" "Work letter is W"
+  assert_eq "P" "$(profile_icon_letter_via_script "Personal")" "Personal letter is P"
+  assert_eq "D" "$(profile_icon_letter_via_script "DRD")" "DRD letter is D"
+  assert_eq "C" "$(profile_icon_letter_via_script "ClientA")" "ClientA letter is C"
+  local first second
+  first="$(profile_icon_index_via_script "ClientA")"
+  second="$(profile_icon_index_via_script "ClientA")"
+  assert_eq "$first" "$second" "custom label hash is stable"
+  assert_true "custom label maps to palette 2-7" test "$first" -ge 2
+  assert_true "custom label maps to palette 2-7" test "$first" -le 7
+  assert_eq "$REPO_ROOT/icons/profile-0.icns" "$(profile_icon_path_via_script "Work")" "Work icon path"
+  assert_eq "$REPO_ROOT/icons/profile-1.icns" "$(profile_icon_path_via_script "Personal")" "Personal icon path"
+  teardown_sandbox
+}
+
+test_custom_profile_icons_have_letter_badge() {
+  test_start "custom profile icons differ from palette-only icons"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work Personal DRD ClientA >/dev/null
+  local drd_hash client_hash work_hash personal_hash drd_idx palette_hash
+  drd_hash="$(shasum -a 256 "$HOME/Applications/Claude DRD.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  client_hash="$(shasum -a 256 "$HOME/Applications/Claude ClientA.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  personal_hash="$(shasum -a 256 "$HOME/Applications/Claude Personal.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  drd_idx="$(profile_icon_index_via_script "DRD")"
+  palette_hash="$(shasum -a 256 "$REPO_ROOT/icons/profile-${drd_idx}.icns" | awk '{print $1}')"
+  assert_ne "$drd_hash" "$palette_hash" "DRD icon is generated with letter badge"
+  assert_ne "$drd_hash" "$work_hash" "DRD icon differs from Work"
+  assert_ne "$drd_hash" "$personal_hash" "DRD icon differs from Personal"
+  assert_ne "$drd_hash" "$client_hash" "DRD and ClientA icons differ"
+  teardown_sandbox
+}
+
+test_dock_adds_launcher_paths() {
+  test_start "--dock adds launcher paths to persistent-apps"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Work Personal >/dev/null
+  local work_url personal_url urls work_app personal_app
+  work_app="$HOME/Applications/Claude Work.app"
+  personal_app="$HOME/Applications/Claude Personal.app"
+  work_url="$(dock_file_url_via_script "$work_app")"
+  personal_url="$(dock_file_url_via_script "$personal_app")"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$work_url" "Work launcher pinned"
+  assert_contains "$urls" "$personal_url" "Personal launcher pinned"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "Dock entries use native tile structure"
+  assert_eq "ok" "$(dock_assert_launchers_grouped "$work_app" "$personal_app")" "launcher pins grouped"
+  teardown_sandbox
+}
+
+test_dock_pins_three_launchers() {
+  test_start "--dock pins Work Personal and DRD together"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Work Personal DRD >/dev/null
+  local work_app personal_app drd_app urls
+  work_app="$HOME/Applications/Claude Work.app"
+  personal_app="$HOME/Applications/Claude Personal.app"
+  drd_app="$HOME/Applications/Claude DRD.app"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$(dock_file_url_via_script "$work_app")" "Work launcher pinned"
+  assert_contains "$urls" "$(dock_file_url_via_script "$personal_app")" "Personal launcher pinned"
+  assert_contains "$urls" "$(dock_file_url_via_script "$drd_app")" "DRD launcher pinned"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "all Dock entries valid"
+  assert_eq "ok" "$(dock_assert_launchers_grouped "$work_app" "$personal_app" "$drd_app")" "all launcher pins grouped"
+  teardown_sandbox
+}
+
+test_dock_repairs_stale_pins() {
+  test_start "--dock repairs stale pins with zero mod-date"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --no-dock Work Personal DRD >/dev/null
+  local work_app personal_app drd_app out
+  work_app="$HOME/Applications/Claude Work.app"
+  personal_app="$HOME/Applications/Claude Personal.app"
+  drd_app="$HOME/Applications/Claude DRD.app"
+  dock_seed_stale_pin "$personal_app"
+  dock_seed_stale_pin "$drd_app"
+  out="$(capture_script create --dock Work Personal DRD)"
+  assert_contains "$out" "repaired stale pin for Claude Personal.app" "repairs Personal stale pin"
+  assert_contains "$out" "repaired stale pin for Claude DRD.app" "repairs DRD stale pin"
+  assert_eq "ok" "$(dock_assert_valid_entries)" "repaired Dock entries valid"
+  assert_eq "ok" "$(dock_assert_launchers_grouped "$work_app" "$personal_app" "$drd_app")" "repaired pins grouped"
+  teardown_sandbox
+}
+
+test_dock_is_idempotent() {
+  test_start "--dock is idempotent when launcher already pinned"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Work >/dev/null
+  local before after
+  before="$(dock_persistent_urls | grep -c "$(dock_file_url_via_script "$HOME/Applications/Claude Work.app")" || true)"
+  capture_script create --dock Work >/dev/null
+  after="$(dock_persistent_urls | grep -c "$(dock_file_url_via_script "$HOME/Applications/Claude Work.app")" || true)"
+  assert_eq "$before" "$after" "no duplicate Dock pin added"
+  assert_eq "1" "$after" "single Work pin remains"
+  teardown_sandbox
+}
+
+test_dock_cleanup_removes_claude_duplicates() {
+  test_start "--dock-cleanup removes duplicate Claude.app pins"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  dock_add_claude_pin "$CLAUDE_LAUNCHERS_CLAUDE_APP"
+  dock_add_claude_pin "$CLAUDE_LAUNCHERS_CLAUDE_APP"
+  local claude_url before_count
+  claude_url="$(dock_file_url_via_script "$CLAUDE_LAUNCHERS_CLAUDE_APP")"
+  before_count="$(dock_persistent_urls | grep -c "$claude_url" || true)"
+  assert_eq "2" "$before_count" "seeded duplicate Claude pins"
+  capture_script create --dock --dock-cleanup Work >/dev/null
+  before_count="$(dock_persistent_urls | grep -c "$claude_url" || true)"
+  assert_eq "0" "$before_count" "duplicate Claude.app pins removed"
+  assert_contains "$(dock_persistent_urls)" "$(dock_file_url_via_script "$HOME/Applications/Claude Work.app")" "launcher still pinned"
   teardown_sandbox
 }
 
@@ -378,15 +622,17 @@ test_create_rebuilds_launcher_only() {
   teardown_sandbox
 }
 
-test_create_without_icon() {
-  test_start "create succeeds when Claude.app has no .icns"
+test_create_without_icons_dir() {
+  test_start "create succeeds when profile icons directory is missing"
   setup_sandbox
   create_mock_claude >/dev/null
-  rm -f "$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/"*.icns
+  unset CLAUDE_LAUNCHERS_ICONS_DIR
+  export CLAUDE_LAUNCHERS_ICONS_DIR="$SANDBOX/missing-icons"
   local out
   out="$(capture_script create Work 2>&1)"
-  assert_contains "$out" "no source .icns found" "warns about missing icon"
+  assert_contains "$out" "profile icons not found" "warns about missing icons dir"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/MacOS/applet" "launcher still created"
+  assert_file_missing "$HOME/Applications/Claude Work.app/Contents/Resources/Assets.car" "Assets.car still removed"
   teardown_sandbox
 }
 
@@ -545,6 +791,358 @@ test_full_lifecycle() {
   teardown_sandbox
 }
 
+test_label_max_length_and_rejections() {
+  test_start "labels reject length 51+, leading dot, colon"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local ok_label="$(printf 'A%.0s' {1..50})"
+  capture_script create "$ok_label" >/dev/null
+  assert_file_exists "$HOME/Applications/Claude $ok_label.app" "50-char label accepted"
+
+  local long_label="$(printf 'B%.0s' {1..51})"
+  set +e
+  local out code
+  out="$(capture_script create "$long_label" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "51-char label exits 1"
+  assert_contains "$out" "too long" "51-char label rejected"
+
+  set +e
+  out="$(capture_script create ".hidden" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "leading dot exits 1"
+  assert_contains "$out" "unsupported characters" "leading dot rejected"
+
+  set +e
+  out="$(capture_script create "Bad:Label" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "colon label exits 1"
+  assert_contains "$out" "unsupported characters" "colon rejected"
+  teardown_sandbox
+}
+
+test_label_allowed_special_chars() {
+  test_start "labels allow apostrophe, hyphen, underscore"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create "Client's" "side-project" "my_profile" >/dev/null
+  assert_file_exists "$HOME/Applications/Claude Client's.app" "apostrophe label"
+  assert_file_exists "$HOME/Applications/Claude side-project.app" "hyphen label"
+  assert_file_exists "$HOME/Applications/Claude my_profile.app" "underscore label"
+  assert_eq "ClaudeClients" "$(slug_via_script "Client's")" "apostrophe stripped in slug"
+  assert_eq "ClaudeSideProject" "$(slug_via_script "side-project")" "hyphen slug"
+  assert_eq "ClaudeMyprofile" "$(slug_via_script "my_profile")" "underscore stripped in slug"
+  teardown_sandbox
+}
+
+test_label_trim_and_case_slug_collision() {
+  test_start "labels trim whitespace and reject case-insensitive slug duplicates"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create "  Work  " >/dev/null
+  assert_file_exists "$HOME/Applications/Claude Work.app" "trimmed label creates launcher"
+  teardown_sandbox
+
+  setup_sandbox
+  create_mock_claude >/dev/null
+  set +e
+  local out code
+  out="$(capture_script create "Work" "WORK" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "Work + WORK duplicate slug exits 1"
+  assert_contains "$out" "duplicate profile data directory" "case-insensitive duplicate explained"
+  teardown_sandbox
+}
+
+test_label_unicode_allowed() {
+  test_start "unicode labels are accepted when printable"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create "Café" >/dev/null
+  assert_file_exists "$HOME/Applications/Claude Café.app" "unicode label accepted"
+  teardown_sandbox
+}
+
+test_icons_dir_override() {
+  test_start "CLAUDE_LAUNCHERS_ICONS_DIR override supplies profile icons"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  export CLAUDE_LAUNCHERS_ICONS_DIR="$REPO_ROOT/icons"
+  capture_script create Work >/dev/null
+  local work_hash palette_hash
+  work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  palette_hash="$(shasum -a 256 "$REPO_ROOT/icons/profile-0.icns" | awk '{print $1}')"
+  assert_eq "$palette_hash" "$work_hash" "override icons dir used for Work"
+  teardown_sandbox
+}
+
+test_work_personal_icons_match_palette() {
+  test_start "Work and Personal icons use symbol palette without letter badge"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work Personal >/dev/null
+  local work_hash personal_hash
+  work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  personal_hash="$(shasum -a 256 "$HOME/Applications/Claude Personal.app/Contents/Resources/applet.icns" | awk '{print $1}')"
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/profile-0.icns" | awk '{print $1}')" "$work_hash" "Work matches profile-0 symbol"
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/profile-1.icns" | awk '{print $1}')" "$personal_hash" "Personal matches profile-1 symbol"
+  assert_eq "W" "$(profile_icon_letter_via_script "Work")" "Work letter metadata is W"
+  assert_eq "P" "$(profile_icon_letter_via_script "Personal")" "Personal letter metadata is P"
+  teardown_sandbox
+}
+
+test_generate_icons_swift_failure_graceful() {
+  test_start "generate_icons.swift failure falls back without breaking create"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local icons="$SANDBOX/icons"
+  mkdir -p "$icons"
+  cp "$REPO_ROOT/icons/profile-"*.icns "$icons/"
+  printf 'not valid swift\n' >"$icons/generate_icons.swift"
+  export CLAUDE_LAUNCHERS_ICONS_DIR="$icons"
+  local out
+  out="$(capture_script create DRD 2>&1)"
+  assert_file_exists "$HOME/Applications/Claude DRD.app/Contents/MacOS/applet" "launcher created despite icon gen failure"
+  assert_file_missing "$HOME/Applications/Claude DRD.app/Contents/Resources/Assets.car" "Assets.car still removed"
+  assert_not_contains "$out" "ERROR: failed to build launcher" "create did not abort"
+  teardown_sandbox
+}
+
+test_dock_no_dock_skips_pinning() {
+  test_start "create --no-dock does not modify Dock plist"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --no-dock Work Personal >/dev/null
+  local urls
+  urls="$(dock_persistent_urls)"
+  assert_not_contains "$urls" "$(dock_file_url_via_script "$HOME/Applications/Claude Work.app")" "Work not pinned"
+  assert_not_contains "$urls" "$(dock_file_url_via_script "$HOME/Applications/Claude Personal.app")" "Personal not pinned"
+  teardown_sandbox
+}
+
+test_dock_pin_single_launcher() {
+  test_start "--dock pins a single launcher"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Work >/dev/null
+  local urls work_url
+  work_url="$(dock_file_url_via_script "$HOME/Applications/Claude Work.app")"
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "$work_url" "single Work pin added"
+  assert_eq "1" "$(printf '%s\n' "$urls" | grep -c "$work_url" || true)" "exactly one Work pin"
+  teardown_sandbox
+}
+
+test_dock_changes_disabled_in_test_mode() {
+  test_start "dock_changes_disabled skips Dock writes without mock plist"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  unset CLAUDE_LAUNCHERS_DOCK_PLIST
+  local out plist
+  plist="$HOME/Library/Preferences/com.apple.dock.plist"
+  out="$(capture_script create --dock Work 2>&1)"
+  assert_file_exists "$HOME/Applications/Claude Work.app" "launcher created"
+  assert_file_missing "$plist" "real Dock plist not created in test mode"
+  assert_not_contains "$out" "Dock: pinned Claude Work.app" "no Dock pin message without mock plist"
+  teardown_sandbox
+}
+
+test_dock_url_encodes_spaces_in_label() {
+  test_start "Dock URLs encode spaces in Claude Personal.app path"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Personal >/dev/null
+  local urls
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "%20" "space encoded in Dock URL"
+  assert_contains "$urls" "Claude%20Personal.app" "Personal app name encoded"
+  teardown_sandbox
+}
+
+test_dock_url_encodes_special_path_chars() {
+  test_start "Dock URLs encode special characters in launcher paths"
+  setup_sandbox
+  export HOME="$SANDBOX/home with spaces"
+  mkdir -p "$HOME/Applications"
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --dock Work >/dev/null
+  local urls
+  urls="$(dock_persistent_urls)"
+  assert_contains "$urls" "%20" "space in HOME path encoded"
+  assert_contains "$urls" "Claude%20Work.app" "launcher name encoded"
+  teardown_sandbox
+}
+
+test_dock_remove_pins_by_url_and_label() {
+  test_start "dock_remove_app_pins removes matches by URL or file-label"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_mock_dock_plist
+  capture_script create --no-dock Work >/dev/null
+  local app="$HOME/Applications/Claude Work.app"
+  dock_seed_stale_pin "$app"
+  dock_seed_pin_label_only "$app"
+  local before removed after
+  before="$(python3 - "$CLAUDE_LAUNCHERS_DOCK_PLIST" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    print(len(plistlib.load(fh).get("persistent-apps", [])))
+PY
+)"
+  assert_eq "2" "$before" "seeded URL and label pins"
+  removed="$(dock_remove_pins_via_script "$app" "$CLAUDE_LAUNCHERS_DOCK_PLIST")"
+  assert_eq "2" "$removed" "removed both stale pins"
+  after="$(python3 - "$CLAUDE_LAUNCHERS_DOCK_PLIST" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    print(len(plistlib.load(fh).get("persistent-apps", [])))
+PY
+)"
+  assert_eq "0" "$after" "no Dock pins remain"
+  teardown_sandbox
+}
+
+test_profile_data_initialized_detection() {
+  test_start "profile_data_initialized detects saved sign-in artifacts"
+  setup_sandbox
+  local dir="$HOME/ClaudeWork"
+  assert_false "empty dir not initialized" profile_data_initialized_via_script "ClaudeWork"
+  mkdir -p "$dir"
+  assert_false "empty profile dir not initialized" profile_data_initialized_via_script "ClaudeWork"
+  printf '{"oauth:tokenCache":"x"}\n' >"$dir/config.json"
+  assert_true "config.json oauth marks initialized" profile_data_initialized_via_script "ClaudeWork"
+  rm -f "$dir/config.json"
+  touch "$dir/Local State"
+  assert_true "Local State marks initialized" profile_data_initialized_via_script "ClaudeWork"
+  rm -f "$dir/Local State"
+  touch "$dir/Cookies"
+  assert_true "Cookies marks initialized" profile_data_initialized_via_script "ClaudeWork"
+  teardown_sandbox
+}
+
+test_start_fresh_declined_keeps_data() {
+  test_start "start fresh declined keeps profile data and skips rebuild"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create DRD >/dev/null
+  local app="$HOME/Applications/Claude DRD.app"
+  local data="$HOME/ClaudeDrd"
+  echo "stale" >"$app/stale-marker.txt"
+  mkdir -p "$data"
+  printf '{"oauth:tokenCache":"keep"}\n' >"$data/config.json"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=n
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "kept the saved local sign-in" "decline keeps sign-in"
+  assert_not_contains "$out" "Rebuilding launcher" "no rebuild when declined"
+  assert_file_exists "$data/config.json" "profile data preserved"
+  assert_file_exists "$app/stale-marker.txt" "launcher not rebuilt"
+  teardown_sandbox
+}
+
+test_management_menu_cancel() {
+  test_start "management menu option 8 cancels without changes"
+  setup_sandbox
+  create_generated_launcher "Personal"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=8
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Cancelled. Nothing changed." "cancel message"
+  assert_file_exists "$HOME/Applications/Claude Personal.app" "launcher unchanged"
+  teardown_sandbox
+}
+
+test_management_menu_open_all() {
+  test_start "management menu option 2 opens all generated profiles"
+  setup_sandbox
+  create_generated_launcher "Work"
+  create_generated_launcher "Personal"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=2
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Opening Claude Work" "opens Work"
+  assert_contains "$out" "Opening Claude Personal" "opens Personal"
+  teardown_sandbox
+}
+
+test_management_menu_open_launchers_folder() {
+  test_start "management menu option 3 opens launchers folder"
+  setup_sandbox
+  create_generated_launcher "Personal"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=3
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Opening launchers folder" "reports folder open"
+  assert_contains "$out" "$HOME/Applications" "shows Applications path"
+  teardown_sandbox
+}
+
+test_management_menu_clean_keep_data() {
+  test_start "management menu option 6 removes launchers but keeps data"
+  setup_sandbox
+  create_generated_launcher "Work"
+  local data="$HOME/ClaudeWork"
+  mkdir -p "$data"
+  echo "keep" >"$data/history.db"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=6
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Removing launcher: Claude Work.app" "removes launcher"
+  assert_file_missing "$HOME/Applications/Claude Work.app" "launcher removed"
+  assert_file_exists "$data/history.db" "profile data kept"
+  teardown_sandbox
+}
+
+test_management_menu_clean_purge() {
+  test_start "management menu option 7 runs clean --purge"
+  setup_sandbox
+  create_generated_launcher "Work"
+  local data="$HOME/ClaudeWork"
+  mkdir -p "$data"
+  echo "secret" >"$data/secret.txt"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=7
+  export CLAUDE_LAUNCHERS_PURGE_ANSWER=y
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Removing launcher: Claude Work.app" "removes launcher"
+  assert_contains "$out" "deleted $data" "purges profile data"
+  assert_file_missing "$data" "data directory removed"
+  teardown_sandbox
+}
+
+test_non_macos_rejected() {
+  test_start "non-macOS environments exit with clear error"
+  setup_sandbox
+  mkdir -p "$SANDBOX/bin"
+  cat >"$SANDBOX/bin/uname" <<'FAKE'
+#!/bin/bash
+if [ "$1" = "-s" ]; then
+  echo Linux
+  exit 0
+fi
+exec /usr/bin/uname "$@"
+FAKE
+  chmod +x "$SANDBOX/bin/uname"
+  PATH="$SANDBOX/bin:$PATH"
+  set +e
+  local out code
+  out="$(bash "$SCRIPT" create Work 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "non-macOS exits 1"
+  assert_contains "$out" "only works on macOS" "clear platform error"
+  teardown_sandbox
+}
+
 test_script_syntax() {
   test_start "script passes bash -n syntax check"
   bash -n "$SCRIPT"
@@ -583,16 +1181,32 @@ main() {
   test_existing_launchers_show_management_menu
   test_management_menu_opens_existing_profile
   test_management_menu_create_another_profile
+  test_management_menu_create_pins_to_dock
   test_management_menu_start_fresh_profile
+  test_start_fresh_rebuilds_launcher
+  test_start_fresh_repins_dock
+  test_start_fresh_pins_dock_when_not_pinned
   test_create_custom_and_implicit_labels
   test_launcher_applescript_payload
   test_onboarding_reset_profile_data
-  test_launcher_uses_normal_claude_icon
+  test_launcher_removes_assets_car
+  test_launcher_profile_icons_distinct
+  test_profile_icon_assignment_deterministic
+  test_custom_profile_icons_have_letter_badge
+  test_dock_adds_launcher_paths
+  test_dock_pins_three_launchers
+  test_dock_repairs_stale_pins
+  test_dock_is_idempotent
+  test_dock_cleanup_removes_claude_duplicates
   test_generated_launcher_has_marker
   test_create_preserves_existing_profile_data
   test_create_rebuilds_launcher_only
-  test_create_without_icon
+  test_create_without_icons_dir
   test_label_validation
+  test_label_max_length_and_rejections
+  test_label_allowed_special_chars
+  test_label_trim_and_case_slug_collision
+  test_label_unicode_allowed
   test_quoted_claude_paths
   test_clean_removes_generated_launchers
   test_clean_keeps_profile_data_by_default
@@ -601,6 +1215,23 @@ main() {
   test_clean_purge
   test_clean_purge_never_targets_plain_claude_app
   test_full_lifecycle
+  test_icons_dir_override
+  test_work_personal_icons_match_palette
+  test_generate_icons_swift_failure_graceful
+  test_dock_no_dock_skips_pinning
+  test_dock_pin_single_launcher
+  test_dock_changes_disabled_in_test_mode
+  test_dock_url_encodes_spaces_in_label
+  test_dock_url_encodes_special_path_chars
+  test_dock_remove_pins_by_url_and_label
+  test_profile_data_initialized_detection
+  test_start_fresh_declined_keeps_data
+  test_management_menu_cancel
+  test_management_menu_open_all
+  test_management_menu_open_launchers_folder
+  test_management_menu_clean_keep_data
+  test_management_menu_clean_purge
+  test_non_macos_rejected
 
   print_summary
 }

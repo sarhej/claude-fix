@@ -19,9 +19,554 @@ set -euo pipefail
 
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
+ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
 GENERATED_DIRS=()
+CLAUDE_APP=""
+
+script_dir() {
+  local src="${BASH_SOURCE[0]:-}"
+  [ -n "$src" ] || return 1
+  cd "$(dirname "$src")" && pwd
+}
+
+icons_dir() {
+  local base
+  if [ -n "${CLAUDE_LAUNCHERS_ICONS_DIR:-}" ]; then
+    [ -d "$CLAUDE_LAUNCHERS_ICONS_DIR" ] || return 1
+    printf '%s' "$CLAUDE_LAUNCHERS_ICONS_DIR"
+    return 0
+  fi
+  if base=$(script_dir 2>/dev/null) && [ -d "$base/icons" ]; then
+    printf '%s/icons' "$base"
+    return 0
+  fi
+  return 1
+}
+
+profile_icon_index() {
+  local label="$1"
+  case "$label" in
+    Work) printf '0' ;;
+    Personal) printf '1' ;;
+    *)
+      local hash num
+      hash=$(printf '%s' "$label" | shasum -a 256 | awk '{print $1}')
+      num=$((16#${hash:0:8}))
+      printf '%s' $((2 + num % 6))
+      ;;
+  esac
+}
+
+profile_icon_letter() {
+  local label="$1" first
+  case "$label" in
+    Work) printf 'W' ;;
+    Personal) printf 'P' ;;
+    *)
+      first=$(printf '%s' "$label" | LC_ALL=C grep -o '[[:alnum:]]' | head -1)
+      if [ -n "$first" ]; then
+        printf '%s' "$first" | tr '[:lower:]' '[:upper:]'
+      else
+        printf '?'
+      fi
+      ;;
+  esac
+}
+
+profile_icon_path() {
+  local label="$1"
+  local dir idx
+  if ! dir=$(icons_dir); then
+    return 1
+  fi
+  idx=$(profile_icon_index "$label")
+  if [ -f "$dir/profile-${idx}.icns" ]; then
+    printf '%s/profile-%s.icns' "$dir" "$idx"
+    return 0
+  fi
+  return 1
+}
+
+generate_profile_icon() {
+  local label="$1" output="$2"
+  local dir idx letter script icon_path
+  case "$label" in
+    Work|Personal)
+      if icon_path=$(profile_icon_path "$label"); then
+        cp "$icon_path" "$output"
+        return 0
+      fi
+      return 1
+      ;;
+    *)
+      if ! dir=$(icons_dir); then
+        return 1
+      fi
+      script="$dir/generate_icons.swift"
+      if [ ! -f "$script" ]; then
+        return 1
+      fi
+      idx=$(profile_icon_index "$label")
+      letter=$(profile_icon_letter "$label")
+      if swift "$script" --index "$idx" --letter "$letter" --output "$output" >/dev/null 2>&1; then
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+}
+
+dock_plist_path() {
+  if [ -n "${CLAUDE_LAUNCHERS_DOCK_PLIST:-}" ]; then
+    printf '%s' "$CLAUDE_LAUNCHERS_DOCK_PLIST"
+    return 0
+  fi
+  printf '%s/Library/Preferences/com.apple.dock.plist' "$HOME"
+}
+
+dock_changes_disabled() {
+  [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && [ -z "${CLAUDE_LAUNCHERS_DOCK_PLIST:-}" ]
+}
+
+dock_file_url() {
+  local path="$1"
+  local abs
+  abs=$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")
+  case "$abs" in
+    */) ;;
+    *) abs="${abs}/" ;;
+  esac
+  python3 - "$abs" <<'PY'
+import sys, urllib.parse
+print("file://" + urllib.parse.quote(sys.argv[1], safe="/"))
+PY
+}
+
+dock_persistent_app_count() {
+  local plist="$1"
+  python3 - "$plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+print(len(data.get("persistent-apps", [])))
+PY
+}
+
+dock_persistent_app_url() {
+  local plist="$1" index="$2"
+  python3 - "$plist" "$index" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+apps = data.get("persistent-apps", [])
+idx = int(sys.argv[2])
+if 0 <= idx < len(apps):
+    print(apps[idx].get("tile-data", {}).get("file-data", {}).get("_CFURLString", ""))
+PY
+}
+
+dock_app_is_pinned() {
+  local app_path="$1"
+  local plist="$2"
+  python3 - "$plist" "$app_path" <<'PY'
+import os, plistlib, sys, urllib.parse
+
+def normalize_url(path):
+    path = os.path.abspath(path)
+    if not path.endswith("/"):
+        path += "/"
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+def url_match(a, b):
+    return urllib.parse.unquote(a or "").rstrip("/").lower() == urllib.parse.unquote(b or "").rstrip("/").lower()
+
+def entry_is_valid(entry):
+    tile = entry.get("tile-data", {})
+    file_data = tile.get("file-data", {})
+    if not file_data.get("_CFURLString"):
+        return False
+    if file_data.get("_CFURLStringType") != 15:
+        return False
+    if entry.get("tile-type") != "file-tile":
+        return False
+    if not tile.get("file-mod-date"):
+        return False
+    return True
+
+plist = sys.argv[1]
+app_path = sys.argv[2]
+want = normalize_url(app_path)
+label = os.path.basename(app_path).removesuffix(".app")
+
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+
+for entry in data.get("persistent-apps", []):
+    tile = entry.get("tile-data", {})
+    url = tile.get("file-data", {}).get("_CFURLString", "")
+    if url_match(url, want) or tile.get("file-label") == label:
+        if entry_is_valid(entry):
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+dock_write_launcher_pins() {
+  local plist="$1"
+  local cleanup="$2"
+  shift 2 || true
+  python3 - "$plist" "$cleanup" "$@" <<'PY'
+import json, os, plistlib, sys, urllib.parse, uuid
+
+APPLE_EPOCH_OFFSET = 2082844800
+
+
+def normalize_url(path):
+    path = os.path.abspath(path)
+    if not path.endswith("/"):
+        path += "/"
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+
+def url_match(a, b):
+    return urllib.parse.unquote(a or "").rstrip("/").lower() == urllib.parse.unquote(b or "").rstrip("/").lower()
+
+
+def apple_hfs_time(unix_time):
+    return int(unix_time + APPLE_EPOCH_OFFSET)
+
+
+def entry_url(entry):
+    return entry.get("tile-data", {}).get("file-data", {}).get("_CFURLString", "")
+
+
+def entry_label(entry):
+    return entry.get("tile-data", {}).get("file-label", "")
+
+
+def entry_is_valid(entry):
+    tile = entry.get("tile-data", {})
+    file_data = tile.get("file-data", {})
+    if not file_data.get("_CFURLString"):
+        return False
+    if file_data.get("_CFURLStringType") != 15:
+        return False
+    if entry.get("tile-type") != "file-tile":
+        return False
+    if not tile.get("file-mod-date"):
+        return False
+    return True
+
+
+def make_tile(app_path, url, label):
+    stat = os.stat(app_path)
+    parent_stat = os.stat(os.path.dirname(app_path))
+    tile = {
+        "tile-type": "file-tile",
+        "GUID": str(uuid.uuid4()).upper(),
+        "tile-data": {
+            "file-data": {
+                "_CFURLString": url,
+                "_CFURLStringType": 15,
+            },
+            "file-label": label,
+            "file-type": 41,
+            "file-mod-date": apple_hfs_time(stat.st_mtime),
+            "parent-mod-date": apple_hfs_time(parent_stat.st_mtime),
+            "dock-extra": False,
+            "is-beta": False,
+        },
+    }
+    return tile
+
+
+def matching_indices(apps, url, label):
+    matches = []
+    for idx, entry in enumerate(apps):
+        if url_match(entry_url(entry), url) or entry_label(entry) == label:
+            matches.append(idx)
+    return matches
+
+
+def group_launcher_indices(apps, launcher_urls):
+    indices = []
+    for idx, entry in enumerate(apps):
+        if any(url_match(entry_url(entry), url) for url in launcher_urls):
+            indices.append(idx)
+    if len(indices) < 2:
+        return
+    tiles = [apps[idx] for idx in indices]
+    for idx in reversed(indices):
+        del apps[idx]
+    insert_at = indices[0]
+    for offset, tile in enumerate(tiles):
+        apps.insert(insert_at + offset, tile)
+
+
+plist_path = sys.argv[1]
+cleanup = sys.argv[2] == "1"
+app_paths = sys.argv[3:]
+
+with open(plist_path, "rb") as fh:
+    data = plistlib.load(fh)
+
+apps = data.setdefault("persistent-apps", [])
+results = []
+
+if cleanup and len(sys.argv) > 3:
+    cleanup_path = os.environ.get("CLAUDE_LAUNCHERS_CLAUDE_APP", "")
+    if cleanup_path and os.path.exists(cleanup_path):
+        cleanup_url = normalize_url(cleanup_path)
+        removed = 0
+        for idx in range(len(apps) - 1, -1, -1):
+            if url_match(entry_url(apps[idx]), cleanup_url):
+                del apps[idx]
+                removed += 1
+        if removed:
+            results.append({"status": "cleanup", "removed": removed})
+
+launcher_urls = []
+for app_path in app_paths:
+    base = os.path.basename(app_path)
+    if not os.path.isdir(app_path):
+        results.append({"app": base, "status": "failed", "reason": "launcher not found"})
+        continue
+
+    url = normalize_url(app_path)
+    label = base.removesuffix(".app")
+    launcher_urls.append(url)
+    matches = matching_indices(apps, url, label)
+
+    valid_idx = None
+    for idx in matches:
+        if entry_is_valid(apps[idx]):
+            valid_idx = idx
+            break
+
+    if valid_idx is not None:
+        for idx in reversed(matches):
+            if idx != valid_idx:
+                del apps[idx]
+        results.append({"app": base, "status": "already"})
+        continue
+
+    stale = bool(matches)
+    for idx in reversed(matches):
+        del apps[idx]
+
+    apps.append(make_tile(app_path, url, label))
+    results.append({"app": base, "status": "repaired" if stale else "pinned"})
+
+group_launcher_indices(apps, launcher_urls)
+
+with open(plist_path, "wb") as fh:
+    plistlib.dump(data, fh)
+
+print(json.dumps(results))
+PY
+}
+
+dock_launcher_url_matches() {
+  local url="$1"
+  local want="$2"
+  local want_no_slash="${want%/}"
+  local url_no_slash="${url%/}"
+  [ "$url" = "$want" ] || [ "$url" = "$want_no_slash" ] || [ "$url_no_slash" = "$want_no_slash" ]
+}
+
+dock_persistent_app_label() {
+  local plist="$1" index="$2"
+  /usr/libexec/PlistBuddy -c "Print :persistent-apps:$index:tile-data:file-label" "$plist" 2>/dev/null || true
+}
+
+dock_remove_app_pins() {
+  local app_path="$1"
+  local plist="$2"
+  python3 - "$plist" "$app_path" <<'PY'
+import os, plistlib, sys, urllib.parse
+
+def normalize_url(path):
+    path = os.path.abspath(path)
+    if not path.endswith("/"):
+        path += "/"
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+def url_match(a, b):
+    return urllib.parse.unquote(a or "").rstrip("/").lower() == urllib.parse.unquote(b or "").rstrip("/").lower()
+
+plist = sys.argv[1]
+app_path = sys.argv[2]
+want = normalize_url(app_path)
+label = os.path.basename(app_path).removesuffix(".app")
+
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+
+apps = data.get("persistent-apps", [])
+removed = 0
+for idx in range(len(apps) - 1, -1, -1):
+    tile = apps[idx].get("tile-data", {})
+    url = tile.get("file-data", {}).get("_CFURLString", "")
+    entry_label = tile.get("file-label", "")
+    if url_match(url, want) or entry_label == label:
+        del apps[idx]
+        removed += 1
+
+with open(plist, "wb") as fh:
+    plistlib.dump(data, fh)
+
+print(removed)
+PY
+}
+
+dock_cleanup_claude_duplicates() {
+  local claude_app="$1"
+  local plist="$2"
+  dock_remove_app_pins "$claude_app" "$plist"
+}
+
+dock_restart() {
+  if dock_changes_disabled; then
+    return 0
+  fi
+  killall Dock >/dev/null 2>&1 || true
+}
+
+prompt_pin_to_dock_setting() {
+  local prompt_msg="$1"
+  local dock_answer
+
+  if [ "${PIN_TO_DOCK:- -1}" -ge 0 ] 2>/dev/null; then
+    return 0
+  fi
+
+  if [ -n "${CLAUDE_LAUNCHERS_DOCK_ANSWER:-}" ]; then
+    case "$CLAUDE_LAUNCHERS_DOCK_ANSWER" in
+      n|N|no|NO|No)
+        PIN_TO_DOCK=0
+        ;;
+      *)
+        PIN_TO_DOCK=1
+        ;;
+    esac
+    return 0
+  fi
+
+  if ! can_prompt; then
+    return 0
+  fi
+
+  prompt_read "$prompt_msg" dock_answer
+  case "$dock_answer" in
+    n|N|no|NO|No)
+      PIN_TO_DOCK=0
+      ;;
+    *)
+      PIN_TO_DOCK=1
+      ;;
+  esac
+}
+
+pin_launchers_to_dock() {
+  local cleanup="${1:-0}"
+  shift || true
+  local apps=("$@")
+  local plist claude_app removed=0
+  local pinned=0 already=0 repaired=0 failed=0
+  local app base changed=0
+  local results_json line status reason
+
+  if dock_changes_disabled; then
+    return 0
+  fi
+
+  plist=$(dock_plist_path)
+  if [ ! -f "$plist" ]; then
+    printf '%s\n' "NOTE: Dock preferences not found at $plist; skipping Dock pinning." >&2
+    printf '%s\n' "       Drag launchers from ~/Applications onto the Dock, or re-run with --dock." >&2
+    return 1
+  fi
+
+  claude_app=""
+  if [ "$cleanup" = "1" ]; then
+    claude_app=$(find_claude 2>/dev/null || true)
+    if [ -n "$claude_app" ]; then
+      export CLAUDE_LAUNCHERS_CLAUDE_APP="$claude_app"
+    fi
+  fi
+
+  if ! results_json=$(dock_write_launcher_pins "$plist" "$cleanup" "${apps[@]}"); then
+    echo "  Dock: FAILED to update com.apple.dock.plist" >&2
+    return 1
+  fi
+
+  while IFS=$'\t' read -r status base reason removed; do
+    case "$status" in
+      cleanup)
+        echo "Removed $removed duplicate Claude.app pin(s) from the Dock."
+        changed=1
+        ;;
+      pinned)
+        echo "  Dock: pinned $base"
+        pinned=$((pinned + 1))
+        changed=1
+        ;;
+      repaired)
+        echo "  Dock: repaired stale pin for $base"
+        repaired=$((repaired + 1))
+        changed=1
+        ;;
+      already)
+        echo "  Dock: already pinned $base"
+        already=$((already + 1))
+        ;;
+      failed)
+        if [ -n "$reason" ]; then
+          echo "  Dock: FAILED $base ($reason)" >&2
+        else
+          echo "  Dock: FAILED $base (could not update com.apple.dock.plist)" >&2
+        fi
+        failed=$((failed + 1))
+        ;;
+    esac
+  done < <(python3 -c 'import json,sys
+for item in json.loads(sys.argv[1]):
+    status = item.get("status", "")
+    app = item.get("app", "launcher")
+    reason = item.get("reason", "")
+    removed = str(item.get("removed", ""))
+    print("\t".join([status, app, reason, removed]))
+' "$results_json")
+
+  if [ "$changed" -eq 1 ]; then
+    dock_restart
+  fi
+
+  echo
+  if [ "$failed" -gt 0 ]; then
+    echo "Dock pinning incomplete: $pinned pinned, $repaired repaired, $already already pinned, $failed failed." >&2
+    echo "Try: $0 create --dock ${apps[*]##*/}" >&2
+    echo "Or drag the launcher(s) from ~/Applications onto the Dock." >&2
+    return 1
+  fi
+  if [ "$pinned" -eq 0 ] && [ "$repaired" -eq 0 ] && [ "$already" -gt 0 ]; then
+    echo "Dock: all launcher(s) already pinned ($already)."
+  elif [ "$pinned" -gt 0 ] || [ "$repaired" -gt 0 ]; then
+    if [ "$already" -gt 0 ]; then
+      echo "Dock: pinned $pinned launcher(s), repaired $repaired stale pin(s); $already already pinned."
+    elif [ "$repaired" -gt 0 ] && [ "$pinned" -gt 0 ]; then
+      echo "Dock: pinned $pinned launcher(s), repaired $repaired stale pin(s)."
+    elif [ "$repaired" -gt 0 ]; then
+      echo "Dock: repaired $repaired stale Dock pin(s)."
+    else
+      echo "Dock: pinned $pinned launcher(s)."
+    fi
+  fi
+  return 0
+}
 
 require_macos() {
   if [ "$(uname -s)" != "Darwin" ]; then
@@ -209,7 +754,21 @@ start_fresh_generated_profile_by_index() {
     y|Y|yes|YES|Yes)
       rm -rf "$data"
       echo "  cleared local sign-in for Claude $label"
-      echo "Next: open Claude $label and sign in with the right account."
+      echo
+      require_tools osacompile osascript
+      if ensure_claude_app; then
+        echo "Rebuilding launcher for Claude $label..."
+        if ! make_launcher "$label" 0; then
+          echo "NOTE: Could not rebuild launcher for Claude $label." >&2
+          echo "Next: open Claude $label and sign in with the right account."
+          return 0
+        fi
+        refresh_dock_after_start_fresh "$idx"
+        maybe_open_after_start_fresh "$idx"
+      else
+        echo "NOTE: Could not rebuild launcher (Claude Desktop not found)."
+        echo "Next: open Claude $label and sign in with the right account."
+      fi
       ;;
     *)
       echo "  kept the saved local sign-in in ~/$dir"
@@ -347,6 +906,7 @@ show_existing_setup_menu() {
       fi
       local new_labels=()
       read -r -a new_labels <<< "$names"
+      export CLAUDE_LAUNCHERS_FROM_MANAGEMENT=1
       create_setup "${new_labels[@]}"
       ;;
     5)
@@ -389,18 +949,22 @@ Create options:
   --no-desktop         Do not copy launchers to your Desktop
   --launch             Launch the created profile(s) after setup
   --no-launch          Do not launch profiles after setup
+  --dock               Pin created launchers to the Dock (idempotent)
+  --no-dock            Do not change the Dock
+  --dock-cleanup       With --dock, remove duplicate Claude.app Dock pins first
   --yes               Skip the interactive menu (assumes existing Work, creates Personal)
 
 Examples:
   ./make_claude_launchers.sh
   ./make_claude_launchers.sh create Work Personal Clients
   ./make_claude_launchers.sh create --desktop --launch Personal
+  ./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
   ./make_claude_launchers.sh clean --purge
 
 Note:
-  Your normal Claude.app keeps its current login. Generated launchers open
-  isolated profiles via --user-data-dir. Running profiles may appear as
-  separate same-looking Claude Dock icons.
+  Your normal Claude.app keeps its current login. Generated launchers use
+  original profile icons (not affiliated with Anthropic) and open isolated
+  profiles via --user-data-dir.
 MSG
 }
 
@@ -429,12 +993,147 @@ find_claude() {
   return 1
 }
 
+ensure_claude_app() {
+  if [ -n "$CLAUDE_APP" ] && [ -d "$CLAUDE_APP" ]; then
+    return 0
+  fi
+  if ! CLAUDE_APP=$(find_claude); then
+    cat >&2 <<MSG
+ERROR: Claude Desktop is not installed (or could not be found).
+
+  Install it from https://claude.ai/download and re-run this script.
+  If it is installed in an unusual location, move it to /Applications.
+MSG
+    return 1
+  fi
+  return 0
+}
+
+make_desktop_shortcut() {
+  local app="$1" name="$2"
+  local desktop="$HOME/Desktop"
+  [ -d "$desktop" ] || mkdir -p "$desktop"
+  local desktop_app="$desktop/$name.app"
+  rm -rf "$desktop_app"
+  if ! cp -cR "$app" "$desktop_app" 2>/dev/null; then
+    cp -R "$app" "$desktop_app"
+  fi
+  echo "     desktop launcher: $desktop_app"
+}
+
+make_launcher() {
+  local label="$1"
+  local desktop_aliases="${2:-0}"
+  local name="Claude $label"
+  local dir; dir=$(slug "$label")
+  local app="$APPS/$name.app"
+  local data="$HOME/$dir"
+
+  if [ -z "$CLAUDE_APP" ] || [ ! -d "$CLAUDE_APP" ]; then
+    ensure_claude_app || return 1
+  fi
+
+  if [ -d "$data" ]; then
+    echo "  -> profile '$label' already has data at ~/$dir (keeping it)"
+  else
+    echo "  -> creating new profile '$label' at ~/$dir"
+  fi
+
+  rm -rf "$app"   # only ever removes the launcher app, never the data dir
+  local cmd escaped_cmd data_dir_abs
+  data_dir_abs=$(shell_quote "$data")
+  cmd="open -n -a $(shell_quote "$CLAUDE_APP") --args --user-data-dir=$data_dir_abs"
+  escaped_cmd=$(applescript_escape "$cmd")
+  if ! osacompile -o "$app" \
+    -e "do shell script \"$escaped_cmd\"" \
+    >/dev/null 2>&1; then
+    echo "ERROR: failed to build launcher app: $app" >&2
+    return 1
+  fi
+  rm -f "$app/Contents/Resources/Assets.car"
+  generate_profile_icon "$label" "$app/Contents/Resources/applet.icns" || true
+  printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\n' "$label" "$dir" >"$app/$MARKER_FILE"
+  touch "$app"
+  echo "     built launcher: $app"
+  if [ "$desktop_aliases" = "1" ]; then
+    make_desktop_shortcut "$app" "$name"
+  fi
+}
+
+refresh_dock_after_start_fresh() {
+  local idx="$1"
+  local label="${GENERATED_LABELS[$idx]}"
+  local app="$APPS/Claude $label.app"
+  local plist removed=0
+
+  if dock_changes_disabled; then
+    return 0
+  fi
+
+  plist=$(dock_plist_path)
+  if [ ! -f "$plist" ]; then
+    printf '%s\n' "NOTE: Dock preferences not found at $plist; skipping Dock pinning." >&2
+    return 0
+  fi
+
+  if [ ! -d "$app" ]; then
+    printf '%s\n' "NOTE: Launcher not found at $app; skipping Dock pinning." >&2
+    return 0
+  fi
+
+  removed=$(dock_remove_app_pins "$app" "$plist")
+  echo
+  echo "Updating Dock..."
+  if [ "$removed" -gt 0 ]; then
+    echo "  Dock: removed $removed stale pin(s) for $(basename "$app")"
+  fi
+  pin_launchers_to_dock 0 "$app"
+}
+
+maybe_open_after_start_fresh() {
+  local idx="$1"
+  local label="${GENERATED_LABELS[$idx]}"
+  local open_now=-1
+  local ans
+
+  if [ -n "${CLAUDE_LAUNCHERS_LAUNCH_ANSWER:-}" ]; then
+    case "$CLAUDE_LAUNCHERS_LAUNCH_ANSWER" in
+      n|N|no|NO|No)
+        open_now=0
+        ;;
+      *)
+        open_now=1
+        ;;
+    esac
+  elif can_prompt; then
+    prompt_read "Open Claude $label now to sign in again? [Y/n] " ans
+    case "$ans" in
+      n|N|no|NO|No)
+        open_now=0
+        ;;
+      *)
+        open_now=1
+        ;;
+    esac
+  else
+    open_now=0
+  fi
+
+  if [ "$open_now" = "1" ]; then
+    open_generated_launcher_by_index "$idx"
+  else
+    echo "Next: open Claude $label and sign in with the right account."
+  fi
+}
+
 create_setup() {
   require_tools osacompile osascript
   mkdir -p "$APPS"
 
   local DESKTOP_ALIASES=0
   local LAUNCH_AFTER_CREATE=0
+  local PIN_TO_DOCK=-1
+  local DOCK_CLEANUP=0
   local SKIP_INTERACTIVE=0
   local EXISTING_PROFILE_LABEL=""
   local RAW_LABELS=()
@@ -451,6 +1150,15 @@ create_setup() {
         ;;
       --no-launch)
         LAUNCH_AFTER_CREATE=0
+        ;;
+      --dock)
+        PIN_TO_DOCK=1
+        ;;
+      --no-dock)
+        PIN_TO_DOCK=0
+        ;;
+      --dock-cleanup)
+        DOCK_CLEANUP=1
         ;;
       --yes|-y)
         SKIP_INTERACTIVE=1
@@ -566,6 +1274,10 @@ create_setup() {
             LAUNCH_AFTER_CREATE=1
             ;;
         esac
+
+        if [ "$PIN_TO_DOCK" -lt 0 ]; then
+          prompt_pin_to_dock_setting "Pin launchers to Dock? [Y/n] "
+        fi
         echo
       fi
     else
@@ -610,75 +1322,27 @@ $dir
     exit 1
   fi
 
-  local CLAUDE_APP
-  if ! CLAUDE_APP=$(find_claude); then
-    cat >&2 <<MSG
-ERROR: Claude Desktop is not installed (or could not be found).
+  if [ "$PIN_TO_DOCK" -lt 0 ]; then
+    if [ "${CLAUDE_LAUNCHERS_FROM_MANAGEMENT:-}" = "1" ]; then
+      prompt_pin_to_dock_setting "Pin new launcher(s) to Dock? [Y/n] "
+    elif [ "$SKIP_INTERACTIVE" = "0" ]; then
+      prompt_pin_to_dock_setting "Pin launchers to Dock? [Y/n] "
+    fi
+  fi
 
-  Install it from https://claude.ai/download and re-run this script.
-  If it is installed in an unusual location, move it to /Applications.
-MSG
+  if ! ensure_claude_app; then
     exit 1
   fi
   echo "Found Claude at: $CLAUDE_APP"
 
-  local SRC_ICON=""
-  local ICONS=("$CLAUDE_APP/Contents/Resources/"*.icns)
-  if [ -e "${ICONS[0]}" ]; then
-    SRC_ICON="${ICONS[0]}"
+  if ! icons_dir >/dev/null 2>&1; then
+    echo "NOTE: profile icons not found - launchers will use the default applet icon."
+    echo "       Run from a cloned repo (or set CLAUDE_LAUNCHERS_ICONS_DIR) for colored profile icons."
   fi
-  [ -z "$SRC_ICON" ] && echo "NOTE: no source .icns found - launchers will use the default applet icon."
 
   if [ -n "$EXISTING_PROFILE_LABEL" ] && [ "${#LABELS[@]}" -eq 1 ]; then
     maybe_reset_onboarding_profile_data "${LABELS[0]}" "$(slug "${LABELS[0]}")"
   fi
-
-  make_desktop_shortcut() {
-    local app="$1" name="$2"
-    local desktop="$HOME/Desktop"
-    [ -d "$desktop" ] || mkdir -p "$desktop"
-    local desktop_app="$desktop/$name.app"
-    rm -rf "$desktop_app"
-    if ! cp -cR "$app" "$desktop_app" 2>/dev/null; then
-      cp -R "$app" "$desktop_app"
-    fi
-    echo "     desktop launcher: $desktop_app"
-  }
-
-  make_launcher() {
-    local label="$1"
-    local name="Claude $label"
-    local dir; dir=$(slug "$label")
-    local app="$APPS/$name.app"
-    local data="$HOME/$dir"
-
-    if [ -d "$data" ]; then
-      echo "  -> profile '$label' already has data at ~/$dir (keeping it)"
-    else
-      echo "  -> creating new profile '$label' at ~/$dir"
-    fi
-
-    rm -rf "$app"   # only ever removes the launcher app, never the data dir
-    local cmd escaped_cmd data_dir_abs
-    data_dir_abs=$(shell_quote "$data")
-    cmd="open -n -a $(shell_quote "$CLAUDE_APP") --args --user-data-dir=$data_dir_abs"
-    escaped_cmd=$(applescript_escape "$cmd")
-    if ! osacompile -o "$app" \
-      -e "do shell script \"$escaped_cmd\"" \
-      >/dev/null 2>&1; then
-      echo "ERROR: failed to build launcher app: $app" >&2
-      exit 1
-    fi
-    if [ -n "$SRC_ICON" ]; then
-      cp "$SRC_ICON" "$app/Contents/Resources/applet.icns"
-    fi
-    printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\n' "$label" "$dir" >"$app/$MARKER_FILE"
-    touch "$app"
-    echo "     built launcher: $app"
-    if [ "$DESKTOP_ALIASES" = "1" ]; then
-      make_desktop_shortcut "$app" "$name"
-    fi
-  }
 
   launch_created_profiles() {
     local label app
@@ -736,19 +1400,32 @@ MSG
         echo "Open each launcher and sign in with the account and tools you want isolated."
       fi
     fi
-    echo
-    echo "Dock note: running profiles may appear as separate same-looking Claude icons."
-    if [ "${#LABELS[@]}" -eq 1 ]; then
-      echo "Tip: drag Claude ${LABELS[0]} to your Dock for quick access to that profile."
-    else
-      echo "Tip: drag the launchers to your Dock. Each opens an isolated Claude profile."
+    if [ "$PIN_TO_DOCK" != "1" ]; then
+      echo
+      if [ "${#LABELS[@]}" -eq 1 ]; then
+        echo "Tip: re-run with --dock to pin Claude ${LABELS[0]} to your Dock,"
+        echo "or drag the launcher there yourself."
+      else
+        echo "Tip: re-run with --dock to pin launchers to your Dock,"
+        echo "or drag them there yourself."
+      fi
     fi
   }
 
   echo "Creating ${#LABELS[@]} launcher(s)..."
+  local CREATED_APPS=()
   for label in "${LABELS[@]}"; do
-    make_launcher "$label"
+    if ! make_launcher "$label" "$DESKTOP_ALIASES"; then
+      exit 1
+    fi
+    CREATED_APPS+=("$APPS/Claude $label.app")
   done
+
+  if [ "$PIN_TO_DOCK" = "1" ]; then
+    echo
+    echo "Updating Dock..."
+    pin_launchers_to_dock "$DOCK_CLEANUP" "${CREATED_APPS[@]}"
+  fi
 
   if [ "$LAUNCH_AFTER_CREATE" = "1" ]; then
     launch_created_profiles
@@ -795,6 +1472,9 @@ clean_setup() {
       if [ -d "$data" ]; then
         if [ -n "${CLAUDE_LAUNCHERS_PURGE_ANSWER:-}" ]; then
           ans="$CLAUDE_LAUNCHERS_PURGE_ANSWER"
+        elif [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ]; then
+          printf "  Delete profile data at %s ? [y/N] " "$data"
+          ans=""
         else
           printf "  Delete profile data at %s ? [y/N] " "$data"
           read -r ans </dev/tty 2>/dev/null || ans=""

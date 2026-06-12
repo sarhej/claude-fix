@@ -118,6 +118,9 @@ assert_exit_code() {
 test_start() {
   CURRENT_TEST="$1"
   TESTS_RUN=$((TESTS_RUN + 1))
+  # stderr is line-buffered when stdout is piped (tail/rg/CI); keeps progress visible
+  echo >&2
+  echo "== $CURRENT_TEST ==" >&2
   echo
   echo "== $CURRENT_TEST =="
 }
@@ -131,10 +134,12 @@ setup_sandbox() {
   mkdir -p "$HOME/Applications"
   export CLAUDE_LAUNCHERS_NO_OPEN=1
   export CLAUDE_LAUNCHERS_TEST_MODE=1
+  export CLAUDE_LAUNCHERS_ICONS_DIR="$REPO_ROOT/icons"
   unset CLAUDE_LAUNCHERS_CLAUDE_APP CLAUDE_LAUNCHERS_PURGE_ANSWER \
     CLAUDE_LAUNCHERS_ONBOARDING_EXISTING CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER \
     CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE CLAUDE_LAUNCHERS_PROFILE_CHOICE \
-    CLAUDE_LAUNCHERS_NEW_PROFILE_NAMES 2>/dev/null || true
+    CLAUDE_LAUNCHERS_NEW_PROFILE_NAMES CLAUDE_LAUNCHERS_DOCK_PLIST \
+    CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_DOCK_ANSWER 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -150,6 +155,8 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_CLAUDE_APP CLAUDE_LAUNCHERS_PURGE_ANSWER CLAUDE_LAUNCHERS_ONBOARDING_EXISTING \
     CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE \
     CLAUDE_LAUNCHERS_PROFILE_CHOICE CLAUDE_LAUNCHERS_NEW_PROFILE_NAMES \
+    CLAUDE_LAUNCHERS_ICONS_DIR CLAUDE_LAUNCHERS_DOCK_PLIST CLAUDE_LAUNCHERS_DOCK_ANSWER \
+    CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_FROM_MANAGEMENT \
     MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
@@ -183,8 +190,13 @@ start_mock_claude_process() {
   "$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/MacOS/Claude" &
   MOCK_CLAUDE_PID=$!
   export MOCK_CLAUDE_PID
-  sleep 0.2
-  kill -0 "$MOCK_CLAUDE_PID" 2>/dev/null
+  local deadline=$((SECONDS + 2))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -f "$marker" ] && kill -0 "$MOCK_CLAUDE_PID" 2>/dev/null; then
+      return 0
+    fi
+  done
+  [ -f "$marker" ] && kill -0 "$MOCK_CLAUDE_PID" 2>/dev/null
 }
 
 stop_mock_claude_process() {
@@ -240,6 +252,201 @@ capture_script() {
 
 slug_via_script() {
   bash -c 'source "$1"; slug "$2"' _ "$SCRIPT" "$1"
+}
+
+profile_icon_index_via_script() {
+  bash -c 'source "$1"; profile_icon_index "$2"' _ "$SCRIPT" "$1"
+}
+
+profile_icon_path_via_script() {
+  bash -c 'source "$1"; profile_icon_path "$2"' _ "$SCRIPT" "$1"
+}
+
+profile_icon_letter_via_script() {
+  bash -c 'source "$1"; profile_icon_letter "$2"' _ "$SCRIPT" "$1"
+}
+
+profile_data_initialized_via_script() {
+  bash -c 'source "$1"; profile_data_initialized "$2"' _ "$SCRIPT" "$1"
+}
+
+dock_remove_pins_via_script() {
+  bash -c 'source "$1"; dock_remove_app_pins "$2" "$3"' _ "$SCRIPT" "$1" "$2"
+}
+
+dock_file_url_via_script() {
+  bash -c 'source "$1"; dock_file_url "$2"' _ "$SCRIPT" "$1"
+}
+
+create_mock_dock_plist() {
+  local plist="${1:-$SANDBOX/dock.plist}"
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict><key>persistent-apps</key><array/></dict></plist>' \
+    >"$plist"
+  export CLAUDE_LAUNCHERS_DOCK_PLIST="$plist"
+}
+
+dock_add_claude_pin() {
+  local claude_app="$1"
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  local url label
+  url=$(dock_file_url_via_script "$claude_app")
+  label=$(basename "$claude_app" .app)
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps: dict" "$plist"
+  local idx
+  idx=$(python3 - "$plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+print(max(len(data.get("persistent-apps", [])) - 1, 0))
+PY
+)
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data dict" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data:file-data dict" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data:file-data:_CFURLString string $url" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data:file-data:_CFURLStringType integer 15" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-type string file-tile" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data:file-label string $label" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :persistent-apps:$idx:tile-data:file-type integer 41" "$plist"
+}
+
+dock_persistent_urls() {
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  local count i
+  count=$(python3 - "$plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+print(len(data.get("persistent-apps", [])))
+PY
+)
+  for ((i = 0; i < count; i++)); do
+    /usr/libexec/PlistBuddy -c "Print :persistent-apps:$i:tile-data:file-data:_CFURLString" "$plist" 2>/dev/null || true
+  done
+}
+
+dock_assert_valid_entries() {
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  python3 - "$plist" <<'PY'
+import plistlib, sys
+plist = sys.argv[1]
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+apps = data.get("persistent-apps", [])
+for i, entry in enumerate(apps):
+    tile = entry.get("tile-data", {})
+    file_data = tile.get("file-data", {})
+    if not file_data.get("_CFURLString"):
+        raise SystemExit(f"persistent-apps[{i}] missing launcher URL")
+    if entry.get("tile-type") != "file-tile":
+        raise SystemExit(f"persistent-apps[{i}] missing tile-type=file-tile")
+    url_type = file_data.get("_CFURLStringType")
+    if url_type != 15:
+        raise SystemExit(f"persistent-apps[{i}] expected _CFURLStringType 15, got {url_type!r}")
+    if not tile.get("file-mod-date"):
+        raise SystemExit(f"persistent-apps[{i}] missing file-mod-date")
+print("ok")
+PY
+}
+
+dock_assert_launchers_grouped() {
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  shift
+  python3 - "$plist" "$@" <<'PY'
+import os, plistlib, sys, urllib.parse
+
+def normalize_url(path):
+    path = os.path.abspath(path)
+    if not path.endswith("/"):
+        path += "/"
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+def url_match(a, b):
+    return urllib.parse.unquote(a or "").rstrip("/").lower() == urllib.parse.unquote(b or "").rstrip("/").lower()
+
+plist = sys.argv[1]
+app_paths = sys.argv[2:]
+want_urls = [normalize_url(path) for path in app_paths]
+
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+
+indices = []
+for idx, entry in enumerate(data.get("persistent-apps", [])):
+    url = entry.get("tile-data", {}).get("file-data", {}).get("_CFURLString", "")
+    if any(url_match(url, want) for want in want_urls):
+        indices.append(idx)
+
+if len(indices) < 2:
+    print("ok")
+    raise SystemExit(0)
+
+expected = list(range(indices[0], indices[0] + len(indices)))
+if indices != expected:
+    raise SystemExit(f"launcher pins not grouped: indices={indices}")
+print("ok")
+PY
+}
+
+dock_seed_stale_pin() {
+  local app_path="$1"
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  local url label
+  url=$(dock_file_url_via_script "$app_path")
+  label=$(basename "$app_path" .app)
+  python3 - "$plist" "$url" "$label" <<'PY'
+import plistlib, sys
+plist, url, label = sys.argv[1:4]
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+apps = data.setdefault("persistent-apps", [])
+apps.append({
+    "tile-type": "file-tile",
+    "tile-data": {
+        "file-data": {
+            "_CFURLString": url,
+            "_CFURLStringType": 15,
+        },
+        "file-label": label,
+        "file-type": 41,
+        "file-mod-date": 0,
+        "parent-mod-date": 0,
+    },
+})
+with open(plist, "wb") as fh:
+    plistlib.dump(data, fh)
+PY
+}
+
+dock_seed_pin_label_only() {
+  local app_path="$1"
+  local plist="${CLAUDE_LAUNCHERS_DOCK_PLIST:-$SANDBOX/dock.plist}"
+  local label
+  label=$(basename "$app_path" .app)
+  python3 - "$plist" "$label" <<'PY'
+import plistlib, sys
+plist, label = sys.argv[1:3]
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+apps = data.setdefault("persistent-apps", [])
+apps.append({
+    "tile-type": "file-tile",
+    "tile-data": {
+        "file-data": {
+            "_CFURLString": "file:///wrong/path/Claude.app/",
+            "_CFURLStringType": 15,
+        },
+        "file-label": label,
+        "file-type": 41,
+        "file-mod-date": 384_000_000,
+        "parent-mod-date": 384_000_000,
+    },
+})
+with open(plist, "wb") as fh:
+    plistlib.dump(data, fh)
+PY
 }
 
 print_summary() {
