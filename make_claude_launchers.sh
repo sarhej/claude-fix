@@ -20,8 +20,8 @@ set -euo pipefail
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/launch-profile.sh"
-# v2 = focus existing profile process instead of always open -n (prevents Dock spam)
-LAUNCHER_VERSION=2
+# v3 = focus existing profile; awk must not early-exit (avoids SIGPIPE 141 with pipefail)
+LAUNCHER_VERSION=3
 ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
@@ -1136,11 +1136,13 @@ CLAUDE_APP=$(shell_quote "$claude_app")
 DATA_DIR=$(shell_quote "$data_dir")
 FLAG="--user-data-dir=\${DATA_DIR}"
 
+# Do not "exit" early inside awk: with pipefail, that SIGPIPEs ps (exit 141) and
+# macOS shows "The command exited with a non-zero status" on the Dock launcher.
 pid="\$(
   ps -axo pid=,command= 2>/dev/null | awk -v flag="\$FLAG" '
-  {
+  !found {
     for (i = 2; i <= NF; i++) {
-      if (\$i == flag) { print \$1; exit }
+      if (\$i == flag) { print \$1; found = 1; break }
     }
   }'
 )"

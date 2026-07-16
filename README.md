@@ -508,6 +508,13 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   The script repairs stale pins, sets proper mod dates, groups profile launchers
   together, and restarts the Dock. Verify with:
   `plutil -p ~/Library/Preferences/com.apple.dock.plist | grep -A2 'Claude '`
+- **Dialog: "The command exited with a non-zero status (141)"** when clicking a
+  profile — exit 141 is SIGPIPE from an older focus helper. Run **upgrade**
+  again (v3+). One-click:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
+  ```
 - **Many identical orange Claude icons in the Dock** — each click on an old
   launcher ran `open -n` and started another Claude process for the same
   profile. **One-click fix** (keeps all sign-ins):
@@ -596,6 +603,16 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.2.1 — 2026-07-16
+
+**Fix launcher dialog exit 141 (SIGPIPE)**
+
+- Focus helper no longer early-exits inside `awk` under `pipefail` (that closed
+  the `ps` pipe and made Dock clicks show “non-zero status (141)”)
+- Bump launcher version to 3 so `upgrade` refreshes affected apps
+
+---
 
 ### v1.2.0 — 2026-07-16
 

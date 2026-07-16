@@ -416,8 +416,9 @@ test_launcher_applescript_payload() {
   assert_contains "$launch_body" "$HOME/ClaudeWork" "uses absolute profile dir"
   assert_contains "$launch_body" "open -n" "opens new instance when not running"
   assert_contains "$launch_body" "frontmost" "focuses existing profile process"
+  assert_not_contains "$launch_body" "exit }" "awk must not early-exit (SIGPIPE 141)"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=2" "marker records launcher version"
+    "launcher-version=3" "marker records launcher version"
   teardown_sandbox
 }
 
@@ -1109,7 +1110,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "Work has launch helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" "frontmost" "Work focuses existing"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=2" "Work marker upgraded"
+    "launcher-version=3" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh" "Personal has launch helper"
   teardown_sandbox
 }
