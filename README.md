@@ -334,7 +334,8 @@ What would you like to do next?
   5) Fix wrong account / start fresh for a generated profile
   6) Remove generated launchers (keep local sign-ins)
   7) Remove launchers AND local generated profile data
-  8) Cancel
+  8) Upgrade launchers + quit duplicate Claude windows
+  9) Cancel
 ```
 
 Use **start fresh** if a generated launcher opens the wrong account. It clears that
@@ -342,6 +343,10 @@ launcher's local sign-in folder on your Mac, rebuilds the launcher app (refreshi
 its profile icon), and always pins the launcher to the Dock (removing any stale pin
 first). It does not delete your Claude account and does not change the normal Claude
 app. After clearing, the script opens the launcher so you can sign in again.
+
+Use **upgrade** (menu option 8, or `upgrade` on the CLI) if you see **many identical
+orange Claude icons** in the Dock. Old launchers always opened a new process; upgraded
+launchers focus the existing window for that profile and quit extras.
 
 ### Commands at a glance
 
@@ -357,6 +362,7 @@ app. After clearing, the script opens the launcher so you can sign in again.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
+| `upgrade` | Rebuild all launchers (focus-if-open) and quit duplicate Claude windows. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
 | `help` | Print usage. |
@@ -427,8 +433,10 @@ profile directory are rejected.
 6. **Refresh Finder metadata** — `touch`es the bundle so
    Finder picks up the change.
 
-`-n` tells macOS to launch a **new instance**, which is what allows several
-Claude profiles to run simultaneously.
+`-n` tells macOS to launch a **new instance** only when that profile is not
+already running. If a Claude process with the same `--user-data-dir` exists,
+the launcher **focuses that window** instead — so re-clicking Work/Personal
+does not stack orange Dock icons.
 
 Important caveat: profile isolation depends on Claude Desktop continuing to
 honor Electron/Chromium's `--user-data-dir` flag. That works today for this use
@@ -500,6 +508,18 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   The script repairs stale pins, sets proper mod dates, groups profile launchers
   together, and restarts the Dock. Verify with:
   `plutil -p ~/Library/Preferences/com.apple.dock.plist | grep -A2 'Claude '`
+- **Many identical orange Claude icons in the Dock** — each click on an old
+  launcher ran `open -n` and started another Claude process for the same
+  profile. **One-click fix** (keeps all sign-ins):
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
+  ```
+
+  Or from a clone: `./make_claude_launchers.sh upgrade`. This rebuilds
+  launchers so re-click focuses the open window, and quits extra Claude
+  processes (one kept per profile). If the Dock still looks crowded, wait a
+  moment or run `killall Dock`.
 - **Both profiles share data** — this only happens if your Claude build ignores
   `--user-data-dir`. Verify by signing into different accounts in each launcher.
 - **macOS Gatekeeper warning** — the launchers are locally generated and
@@ -547,7 +567,8 @@ Progress is mirrored to stderr when stdout is piped.
 | **Claude installed, running** | `create`/`clean` succeed; running process is never killed |
 | **create** | Onboarding default, explicit labels, AppleScript payload (`--user-data-dir`, `open -n`) |
 | **onboarding** | Existing Work creates Personal; existing Personal creates Work; reset stale sign-in |
-| **management menu** | Options 1–8: open, open all, folder, create (+ Dock pin), start fresh, clean, purge, cancel |
+| **management menu** | Options 1–9: open, open all, folder, create (+ Dock pin), start fresh, clean, purge, upgrade, cancel |
+| **upgrade** | Rebuilds outdated launchers with focus-if-open helper; quits duplicate Claude processes |
 | **start fresh** | Confirm clears data and rebuilds launcher + Dock; decline keeps data and skips rebuild |
 | **launch option** | `--launch` / `--no-launch` behavior and login guidance |
 | **Safety** | Re-create never deletes `~/Claude*` profile data; only rebuilds launcher `.app` |
@@ -575,6 +596,22 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.2.0 — 2026-07-16
+
+**Fix duplicate Dock icons (one-click upgrade)**
+
+- Launchers no longer always `open -n`; they **focus** an existing Claude
+  process for that `--user-data-dir`, or open one new instance if none
+- New `upgrade` command + management menu option 8 for existing users
+- Auto-offers upgrade when outdated launchers are detected
+- Quits stacked duplicate Claude processes (keeps one per profile)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
+```
+
+---
 
 ### v1.1.1 — 2026-06-12
 

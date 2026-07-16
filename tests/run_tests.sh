@@ -35,6 +35,7 @@ test_help() {
   assert_contains "$out" "--launch" "documents launch option"
   assert_contains "$out" "--dock" "documents Dock pinning option"
   assert_contains "$out" "--dock-cleanup" "documents Dock cleanup option"
+  assert_contains "$out" "upgrade" "documents upgrade command"
   assert_contains "$out" "existing Claude login" "documents existing profile model"
   assert_contains "$out" "original profile icons" "documents icon policy"
   teardown_sandbox
@@ -404,14 +405,19 @@ test_launcher_applescript_payload() {
   create_mock_claude >/dev/null
   capture_script create Work >/dev/null
   local script_path="$HOME/Applications/Claude Work.app/Contents/Resources/Scripts/main.scpt"
+  local launch_sh="$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh"
   assert_file_exists "$script_path" "compiled AppleScript exists"
-  local decompiled
+  assert_file_exists "$launch_sh" "launch-profile.sh exists"
+  local decompiled launch_body
   decompiled="$(osadecompile "$script_path" 2>/dev/null || true)"
-  assert_contains "$decompiled" "--user-data-dir" "passes user-data-dir flag"
-  assert_contains "$decompiled" "$HOME/ClaudeWork" "uses absolute profile dir"
-  local runtime_home_literal="\$HOME/ClaudeWork"
-  assert_not_contains "$decompiled" "$runtime_home_literal" "does not rely on runtime HOME expansion"
-  assert_contains "$decompiled" "open -n" "opens new instance"
+  assert_contains "$decompiled" "launch-profile.sh" "AppleScript runs launch helper"
+  launch_body="$(cat "$launch_sh")"
+  assert_contains "$launch_body" "--user-data-dir" "passes user-data-dir flag"
+  assert_contains "$launch_body" "$HOME/ClaudeWork" "uses absolute profile dir"
+  assert_contains "$launch_body" "open -n" "opens new instance when not running"
+  assert_contains "$launch_body" "frontmost" "focuses existing profile process"
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
+    "launcher-version=2" "marker records launcher version"
   teardown_sandbox
 }
 
@@ -666,16 +672,17 @@ test_quoted_claude_paths() {
   setup_sandbox
   create_mock_claude "$HOME/Applications/Sergej's \"Quote\" \$Apps \`tick\` Back\\Slash/Claude.app" >/dev/null
   capture_script create Work >/dev/null
-  local script_path="$HOME/Applications/Claude Work.app/Contents/Resources/Scripts/main.scpt"
-  local decompiled
-  decompiled="$(osadecompile "$script_path" 2>/dev/null || true)"
-  assert_contains "$decompiled" "Sergej'\\\\''s" "single quote was shell-escaped"
-  assert_contains "$decompiled" "Quote" "double-quoted path segment survived"
+  local launch_sh="$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh"
+  assert_file_exists "$launch_sh" "launch helper exists"
+  local body
+  body="$(cat "$launch_sh")"
+  assert_contains "$body" "Sergej'\\''s" "single quote was shell-escaped"
+  assert_contains "$body" "Quote" "double-quoted path segment survived"
   local dollar_apps_literal="\$Apps"
   local backticks_literal="\`tick\`"
-  assert_contains "$decompiled" "$dollar_apps_literal" "dollar sign was not expanded"
-  assert_contains "$decompiled" "$backticks_literal" "backticks were not evaluated"
-  assert_contains "$decompiled" "Back\\\\Slash" "backslash survived escaping"
+  assert_contains "$body" "$dollar_apps_literal" "dollar sign was not expanded"
+  assert_contains "$body" "$backticks_literal" "backticks were not evaluated"
+  assert_contains "$body" "Back\\Slash" "backslash survived escaping"
   teardown_sandbox
 }
 
@@ -1079,14 +1086,46 @@ test_start_fresh_declined_keeps_data() {
 }
 
 test_management_menu_cancel() {
-  test_start "management menu option 8 cancels without changes"
+  test_start "management menu option 9 cancels without changes"
   setup_sandbox
   create_generated_launcher "Personal"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=8
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
   local out
   out="$(capture_script create)"
   assert_contains "$out" "Cancelled. Nothing changed." "cancel message"
   assert_file_exists "$HOME/Applications/Claude Personal.app" "launcher unchanged"
+  teardown_sandbox
+}
+
+test_upgrade_rebuilds_outdated_launchers() {
+  test_start "upgrade rebuilds outdated launchers with focus helper"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_outdated_launcher "Work"
+  create_outdated_launcher "Personal"
+  local out
+  out="$(capture_script upgrade --no-quit-duplicates)"
+  assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
+  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "Work has launch helper"
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" "frontmost" "Work focuses existing"
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
+    "launcher-version=2" "Work marker upgraded"
+  assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh" "Personal has launch helper"
+  teardown_sandbox
+}
+
+test_outdated_launchers_prompt_upgrade() {
+  test_start "outdated launchers offer upgrade before management menu"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_outdated_launcher "Work"
+  export CLAUDE_LAUNCHERS_UPGRADE_ANSWER=y
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "launchers are outdated" "warns about outdated"
+  assert_contains "$out" "Upgrading 1 launcher(s)" "auto-upgrades when accepted"
+  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "helper installed"
   teardown_sandbox
 }
 
@@ -1257,6 +1296,8 @@ main() {
   test_profile_data_initialized_detection
   test_start_fresh_declined_keeps_data
   test_management_menu_cancel
+  test_upgrade_rebuilds_outdated_launchers
+  test_outdated_launchers_prompt_upgrade
   test_management_menu_open_all
   test_management_menu_open_launchers_folder
   test_management_menu_clean_keep_data

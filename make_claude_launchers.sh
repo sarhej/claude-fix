@@ -19,6 +19,9 @@ set -euo pipefail
 
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
+LAUNCH_SCRIPT_REL="Contents/Resources/launch-profile.sh"
+# v2 = focus existing profile process instead of always open -n (prevents Dock spam)
+LAUNCHER_VERSION=2
 ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
@@ -913,9 +916,34 @@ select_generated_launcher() {
 }
 
 show_existing_setup_menu() {
-  local choice names
+  local choice names ans
   load_generated_launchers
   [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 1
+
+  if any_launcher_outdated; then
+    echo
+    echo "NOTE: Your Claude launchers are outdated."
+    echo "Older launchers always open a NEW Claude window (duplicate Dock icons)."
+    echo "Upgrade rebuilds launchers so re-clicking a profile focuses the same window,"
+    echo "and quits extra Claude processes (keeps one per profile). Sign-ins are kept."
+    if [ -n "${CLAUDE_LAUNCHERS_UPGRADE_ANSWER:-}" ]; then
+      ans="$CLAUDE_LAUNCHERS_UPGRADE_ANSWER"
+    elif can_prompt; then
+      prompt_read "Upgrade launchers now (recommended)? [Y/n] " ans
+    else
+      ans="y"
+    fi
+    case "${ans:-y}" in
+      n|N|no|NO|No)
+        echo "  skipped upgrade"
+        ;;
+      *)
+        upgrade_setup
+        echo
+        load_generated_launchers
+        ;;
+    esac
+  fi
 
   echo
   echo "Claude Profile Switcher is already set up."
@@ -930,7 +958,8 @@ show_existing_setup_menu() {
   echo "  5) Fix wrong account / start fresh for a generated profile"
   echo "  6) Remove generated launchers (keep local sign-ins)"
   echo "  7) Remove launchers AND local generated profile data"
-  echo "  8) Cancel"
+  echo "  8) Upgrade launchers + quit duplicate Claude windows"
+  echo "  9) Cancel"
 
   if [ -n "${CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE:-}" ]; then
     choice="$CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE"
@@ -938,7 +967,7 @@ show_existing_setup_menu() {
     prompt_read "Select [1]: " choice
   else
     echo
-    echo "Run a generated launcher from $APPS, or run '$0 clean' to remove setup."
+    echo "Run a generated launcher from $APPS, or run '$0 upgrade' / '$0 clean'."
     return 0
   fi
 
@@ -982,6 +1011,9 @@ show_existing_setup_menu() {
       clean_setup --purge
       ;;
     8)
+      upgrade_setup
+      ;;
+    9)
       echo "Cancelled. Nothing changed."
       ;;
     *)
@@ -998,13 +1030,14 @@ make_claude_launchers.sh - manage isolated Claude Desktop profiles
 
 Commands:
   create [options] [labels...]   Create one launcher per label
+  upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
   help                 Show this help
 
 Interactive default:
   Keeps your existing Claude login as-is and creates only the missing second
-  profile (Work or Personal).
+  profile (Work or Personal). If launchers are outdated, offers one-click upgrade.
 
 Create options:
   --desktop            Also copy clickable launchers to your Desktop
@@ -1016,18 +1049,25 @@ Create options:
   --dock-cleanup       With --dock, remove duplicate Claude.app Dock pins first
   --yes               Skip the interactive menu (assumes existing Work, creates Personal)
 
+Upgrade options:
+  --quit-duplicates    Quit extra Claude processes (default)
+  --no-quit-duplicates Rebuild launchers only; leave running windows alone
+
 Examples:
   ./make_claude_launchers.sh
   ./make_claude_launchers.sh create Work Personal Clients
   ./make_claude_launchers.sh create --desktop --launch Personal
   ./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
+  ./make_claude_launchers.sh upgrade
+  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
   ./make_claude_launchers.sh clean --purge
 
 Note:
   Your normal Claude.app keeps its current login. Generated launchers use
   original profile icons (not affiliated with Anthropic) and open isolated
-  profiles via --user-data-dir. On curl install, icons download to
-  ~/.claude-fix/icons automatically.
+  profiles via --user-data-dir. Re-clicking a profile focuses the existing
+  window instead of spawning another Dock icon. On curl install, icons
+  download to ~/.claude-fix/icons automatically.
 MSG
 }
 
@@ -1084,6 +1124,173 @@ make_desktop_shortcut() {
   echo "     desktop launcher: $desktop_app"
 }
 
+write_launch_profile_script() {
+  local script_path="$1"
+  local claude_app="$2"
+  local data_dir="$3"
+  cat >"$script_path" <<EOF
+#!/bin/bash
+# claude-fix launch helper (v${LAUNCHER_VERSION}): focus existing profile or open one new instance
+set -euo pipefail
+CLAUDE_APP=$(shell_quote "$claude_app")
+DATA_DIR=$(shell_quote "$data_dir")
+FLAG="--user-data-dir=\${DATA_DIR}"
+
+pid="\$(
+  ps -axo pid=,command= 2>/dev/null | awk -v flag="\$FLAG" '
+  {
+    for (i = 2; i <= NF; i++) {
+      if (\$i == flag) { print \$1; exit }
+    }
+  }'
+)"
+
+if [ -n "\$pid" ]; then
+  /usr/bin/osascript -e "tell application \\"System Events\\" to set frontmost of first process whose unix id is \$pid to true" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+exec open -n -a "\$CLAUDE_APP" --args --user-data-dir="\$DATA_DIR"
+EOF
+  chmod +x "$script_path"
+}
+
+launcher_is_current() {
+  local app="$1"
+  local marker="$app/$MARKER_FILE"
+  local ver
+  [ -f "$marker" ] || return 1
+  [ -f "$app/$LAUNCH_SCRIPT_REL" ] || return 1
+  ver=$(marker_value "$marker" "launcher-version")
+  [ "$ver" = "$LAUNCHER_VERSION" ]
+}
+
+any_launcher_outdated() {
+  local app
+  load_generated_launchers
+  local i
+  for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
+    app="${GENERATED_APPS[$i]}"
+    if ! launcher_is_current "$app"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Keep one Claude process per --user-data-dir (and one default); quit extras.
+quit_duplicate_claude_processes() {
+  local killed=0
+  local report
+  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && [ "${CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES:-}" != "1" ]; then
+    return 0
+  fi
+  report=$(python3 - <<'PY'
+import collections, os, signal, subprocess, sys
+
+out = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True, errors="replace")
+by_key = collections.OrderedDict()
+for line in out.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split(None, 1)
+    if len(parts) < 2:
+        continue
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        continue
+    cmd = parts[1]
+    if "Claude.app/Contents/MacOS/Claude" not in cmd:
+        continue
+    key = "__default__"
+    for token in cmd.split():
+        if token.startswith("--user-data-dir="):
+            key = token.split("=", 1)[1]
+            break
+    by_key.setdefault(key, []).append(pid)
+
+killed = []
+for key, pids in by_key.items():
+    pids = sorted(pids)  # keep oldest
+    for pid in pids[1:]:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append((key, pid))
+        except ProcessLookupError:
+            pass
+        except PermissionError as e:
+            print(f"  could not quit pid {pid}: {e}", file=sys.stderr)
+
+for key, pid in killed:
+    label = "default Claude" if key == "__default__" else key
+    print(f"  quit duplicate pid {pid} ({label})")
+print(str(len(killed)))
+PY
+)
+  killed=$(printf '%s\n' "$report" | tail -n1)
+  if [ "${killed:-0}" -gt 0 ]; then
+    echo "Quit $killed duplicate Claude process(es). One window kept per profile."
+  else
+    echo "No duplicate Claude processes found."
+  fi
+}
+
+upgrade_setup() {
+  local quit_dupes=1
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-quit-duplicates)
+        quit_dupes=0
+        ;;
+      --quit-duplicates)
+        quit_dupes=1
+        ;;
+      --*)
+        echo "ERROR: unknown upgrade option: $1" >&2
+        echo "Run '$0 help' for usage." >&2
+        exit 1
+        ;;
+      *)
+        echo "ERROR: unexpected argument: $1" >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+
+  require_tools osacompile osascript
+  load_generated_launchers
+  if [ "${#GENERATED_LABELS[@]}" -eq 0 ]; then
+    echo "No generated Claude launchers found in $APPS."
+    echo "Run '$0' first to create Work/Personal (or custom) profiles."
+    return 1
+  fi
+
+  if ! ensure_claude_app; then
+    return 1
+  fi
+  ensure_icons_available || true
+
+  echo "Upgrading ${#GENERATED_LABELS[@]} launcher(s) to v${LAUNCHER_VERSION} (focus if already open)..."
+  local i label
+  for ((i = 0; i < ${#GENERATED_LABELS[@]}; i++)); do
+    label="${GENERATED_LABELS[$i]}"
+    make_launcher "$label" 0
+  done
+
+  if [ "$quit_dupes" = "1" ]; then
+    echo
+    echo "Cleaning duplicate running Claude windows..."
+    quit_duplicate_claude_processes
+  fi
+
+  echo
+  echo "Done. Launchers updated — clicking a profile opens it once; re-click focuses the same window."
+  echo "If Dock icons still look stacked, wait a second or run: killall Dock"
+}
+
 make_launcher() {
   local label="$1"
   local desktop_aliases="${2:-0}"
@@ -1091,6 +1298,7 @@ make_launcher() {
   local dir; dir=$(slug "$label")
   local app="$APPS/$name.app"
   local data="$HOME/$dir"
+  local launch_script
 
   if [ -z "$CLAUDE_APP" ] || [ ! -d "$CLAUDE_APP" ]; then
     ensure_claude_app || return 1
@@ -1103,19 +1311,18 @@ make_launcher() {
   fi
 
   rm -rf "$app"   # only ever removes the launcher app, never the data dir
-  local cmd escaped_cmd data_dir_abs
-  data_dir_abs=$(shell_quote "$data")
-  cmd="open -n -a $(shell_quote "$CLAUDE_APP") --args --user-data-dir=$data_dir_abs"
-  escaped_cmd=$(applescript_escape "$cmd")
   if ! osacompile -o "$app" \
-    -e "do shell script \"$escaped_cmd\"" \
+    -e 'do shell script "/bin/bash " & quoted form of ((POSIX path of (path to me)) & "Contents/Resources/launch-profile.sh")' \
     >/dev/null 2>&1; then
     echo "ERROR: failed to build launcher app: $app" >&2
     return 1
   fi
   rm -f "$app/Contents/Resources/Assets.car"
+  launch_script="$app/$LAUNCH_SCRIPT_REL"
+  write_launch_profile_script "$launch_script" "$CLAUDE_APP" "$data"
   generate_profile_icon "$label" "$app/Contents/Resources/applet.icns" || true
-  printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\n' "$label" "$dir" >"$app/$MARKER_FILE"
+  printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\nlauncher-version=%s\n' \
+    "$label" "$dir" "$LAUNCHER_VERSION" >"$app/$MARKER_FILE"
   touch "$app"
   echo "     built launcher: $app"
   if [ "$desktop_aliases" = "1" ]; then
@@ -1612,6 +1819,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
     clean)
       shift
       clean_setup "$@"
+      ;;
+    upgrade)
+      shift
+      upgrade_setup "$@"
       ;;
     create)
       [ "$#" -gt 0 ] && shift

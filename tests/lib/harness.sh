@@ -141,7 +141,8 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_NEW_PROFILE_NAMES CLAUDE_LAUNCHERS_DOCK_PLIST \
     CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_DOCK_ANSWER \
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
-    CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD 2>/dev/null || true
+    CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
+    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -161,6 +162,7 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_FROM_MANAGEMENT \
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
+    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
@@ -220,11 +222,23 @@ claude_app_installed_in_sandbox() {
   [ -d "${CLAUDE_LAUNCHERS_CLAUDE_APP:-}" ] || [ -d "$HOME/Applications/Claude.app" ]
 }
 
-# Generated launcher produced by osacompile.
+# Generated launcher produced by osacompile (current version marker).
 create_generated_launcher() {
   local label="$1"
   local app="$HOME/Applications/Claude ${label}.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  touch "$app/Contents/MacOS/applet"
+  touch "$app/Contents/Resources/applet.icns"
+  printf '#!/bin/bash\nopen -n -a Claude\n' >"$app/Contents/Resources/launch-profile.sh"
+  chmod +x "$app/Contents/Resources/launch-profile.sh"
+  printf 'generated-by=claude-fix\nlabel=%s\nlauncher-version=2\n' "$label" >"$app/$MARKER_REL"
+}
+
+# Old v1-style launcher (always open -n; no focus helper) for upgrade tests.
+create_outdated_launcher() {
+  local label="$1"
+  local app="$HOME/Applications/Claude ${label}.app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Scripts"
   touch "$app/Contents/MacOS/applet"
   touch "$app/Contents/Resources/applet.icns"
   printf 'generated-by=claude-fix\nlabel=%s\n' "$label" >"$app/$MARKER_REL"
