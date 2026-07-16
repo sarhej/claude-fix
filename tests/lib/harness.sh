@@ -231,7 +231,7 @@ create_generated_launcher() {
   touch "$app/Contents/Resources/applet.icns"
   printf '#!/bin/bash\nopen -n -a Claude\n' >"$app/Contents/Resources/launch-profile.sh"
   chmod +x "$app/Contents/Resources/launch-profile.sh"
-  printf 'generated-by=claude-fix\nlabel=%s\nlauncher-version=3\n' "$label" >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nlabel=%s\nlauncher-version=4\n' "$label" >"$app/$MARKER_REL"
 }
 
 # Old v1-style launcher (always open -n; no focus helper) for upgrade tests.

@@ -604,6 +604,18 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 
 ## Release notes
 
+### v1.2.2 — 2026-07-16
+
+**Fix launchers that did nothing on click**
+
+- Focus detection matched the helper’s own `awk -v flag=--user-data-dir=…`
+  line in `ps`, then exited without opening Claude
+- Now only matches real `Claude.app/Contents/MacOS/Claude` processes; if focus
+  fails, opens a new instance
+- Launcher version 4 — run `upgrade` again
+
+---
+
 ### v1.2.1 — 2026-07-16
 
 **Fix launcher dialog exit 141 (SIGPIPE)**

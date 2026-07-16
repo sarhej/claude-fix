@@ -20,8 +20,8 @@ set -euo pipefail
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/launch-profile.sh"
-# v3 = focus existing profile; awk must not early-exit (avoids SIGPIPE 141 with pipefail)
-LAUNCHER_VERSION=3
+# v4 = focus only real Claude.app processes (not awk/ps false positives); fall through if focus fails
+LAUNCHER_VERSION=4
 ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
@@ -1136,20 +1136,24 @@ CLAUDE_APP=$(shell_quote "$claude_app")
 DATA_DIR=$(shell_quote "$data_dir")
 FLAG="--user-data-dir=\${DATA_DIR}"
 
-# Do not "exit" early inside awk: with pipefail, that SIGPIPEs ps (exit 141) and
-# macOS shows "The command exited with a non-zero status" on the Dock launcher.
+# Match only real Claude binaries. Matching FLAG alone is wrong: this awk process
+# itself appears in ps as "... -v flag --user-data-dir=..." and would false-positive,
+# then exit without opening Claude.
+# Do not "exit" early inside awk: with pipefail, that SIGPIPEs ps (exit 141).
 pid="\$(
   ps -axo pid=,command= 2>/dev/null | awk -v flag="\$FLAG" '
-  !found {
+  !found && index(\$0, "Claude.app/Contents/MacOS/Claude") {
     for (i = 2; i <= NF; i++) {
       if (\$i == flag) { print \$1; found = 1; break }
     }
   }'
 )"
 
-if [ -n "\$pid" ]; then
-  /usr/bin/osascript -e "tell application \\"System Events\\" to set frontmost of first process whose unix id is \$pid to true" >/dev/null 2>&1 || true
-  exit 0
+if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
+  if /usr/bin/osascript -e "tell application \\"System Events\\" to set frontmost of first process whose unix id is \$pid to true" >/dev/null 2>&1; then
+    exit 0
+  fi
+  # Focus failed (permissions / stale window) — open a new instance below.
 fi
 
 exec open -n -a "\$CLAUDE_APP" --args --user-data-dir="\$DATA_DIR"
