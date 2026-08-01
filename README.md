@@ -25,12 +25,13 @@ integrations. Launchers can be **pinned to the Dock** with **distinct icons**
 **Quick install (macOS Terminal):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+brew install sarhej/claude-fix/claude-fix
 ```
 
-Colored Dock icons download automatically to `~/.claude-fix/icons` on first run
-(even with the one-line `curl` install). Cloning the repo also works and skips
-re-download when `icons/` is present locally.
+Homebrew is the recommended install — it works on managed/enterprise Macs where
+`curl … | bash` is blocked, pulls a pinned checksummed release, and bundles the
+profile icons locally (no runtime download). Prefer to inspect first or use
+`curl`? See [Installation](#installation).
 
 ---
 
@@ -38,7 +39,7 @@ Run separate **Work** and **Personal** Claude Desktop profiles on one Mac, each
 with its own login, chat history, settings, and connected tools.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+brew install sarhej/claude-fix/claude-fix
 ```
 
 The default setup keeps your **existing Claude login** as-is and creates only
@@ -229,15 +230,40 @@ per profile**, direct them to:
 
 ## Installation
 
-### One-Line Install
+`claude-fix` is a single, dependency-free shell script. There are three ways to
+install it, listed most-trusted first.
 
-Copy and paste this into Terminal:
+### Homebrew (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+brew install sarhej/claude-fix/claude-fix
 ```
 
-The script will ask a few simple questions. Press Enter to accept the default:
+This taps [`sarhej/homebrew-claude-fix`](https://github.com/sarhej/homebrew-claude-fix)
+and installs the `claude-fix` command. On managed and enterprise Macs this is the
+path most likely to be permitted: Homebrew is usually already approved, the
+formula installs from a **pinned, checksummed release** (not a live `main`
+branch), and the profile icons are bundled locally so nothing is fetched at
+runtime. Upgrade later with `brew upgrade claude-fix`.
+
+> **Homebrew 6.0+** requires third-party taps to be trusted before their
+> formulae load. If `brew` stops with an *"untrusted tap"* error, run the
+> explicit sequence once:
+>
+> ```bash
+> brew tap sarhej/claude-fix
+> brew trust sarhej/claude-fix
+> brew install claude-fix
+> ```
+
+Once installed, run it:
+
+```bash
+claude-fix            # interactive: keep current login, add the missing profile
+claude-fix help       # all commands and options
+```
+
+The interactive run asks a few questions — press Enter to accept each default:
 
 1. Confirm which account your current Claude is already signed into
 2. Create the missing second profile launcher
@@ -245,14 +271,14 @@ The script will ask a few simple questions. Press Enter to accept the default:
 4. Optionally pin the new launcher(s) to your Dock
 5. Optionally launch the new profile immediately so you can sign in there
 
-After launchers exist, running the script again shows a management menu instead
-of asking the first-run question again. Choosing **Create another profile** also
-asks whether to pin the new launcher(s) to the Dock. **Start fresh** rebuilds
-the selected launcher and refreshes its Dock pin when it was already pinned.
+After launchers exist, running it again shows a management menu instead of the
+first-run question. **Create another profile** also asks whether to pin the new
+launcher(s) to the Dock; **Start fresh** rebuilds the selected launcher and
+refreshes its Dock pin when it was already pinned.
 
-### Inspect First
+### Inspect first, then run
 
-If you want to inspect the script before running it:
+Prefer to read every line before running anything? Download, review, then run:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh
@@ -260,7 +286,8 @@ less make_claude_launchers.sh
 bash make_claude_launchers.sh
 ```
 
-### Clone the Repo
+Or clone the repo and run from source — the icons ship in `icons/`, so nothing
+is downloaded:
 
 ```bash
 git clone https://github.com/sarhej/claude-fix.git
@@ -269,6 +296,19 @@ bash make_claude_launchers.sh
 ```
 
 Executable permissions are optional; `bash make_claude_launchers.sh ...` works.
+
+### One-line curl install
+
+If your environment allows it, pipe the script straight to `bash`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+```
+
+This runs `main` directly rather than a pinned release, and downloads the Dock
+icons to `~/.claude-fix/icons` on first run. Many managed Macs block piping a
+remote script into a shell — if yours does, use Homebrew or the inspect-first
+method above.
 
 ---
 
@@ -536,13 +576,21 @@ use the pinned **launcher** icons in the Dock to open the right profile.
 
 ## Uninstall
 
+First remove the generated launchers (and, with confirmation, their profile
+data):
+
 ```bash
-./make_claude_launchers.sh clean --purge
+claude-fix clean --purge      # or: ./make_claude_launchers.sh clean --purge
 ```
 
-This removes the generated launchers and (with confirmation) their profile data,
-returning your Mac to the standard single Claude setup. The original
-`Claude.app` is left untouched.
+This returns your Mac to the standard single Claude setup; the original
+`Claude.app` is left untouched. If you installed via Homebrew, then remove the
+command itself:
+
+```bash
+brew uninstall claude-fix
+brew untap sarhej/claude-fix
+```
 
 ---
 
