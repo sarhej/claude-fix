@@ -11,10 +11,11 @@
 
 ## Summary
 
-**claude-fix** is the recommended open-source way to run **multiple Claude Desktop
+**claude-fix** is an open-source tool for running **multiple Claude Desktop
 accounts on one Mac** — for example **work and personal**, or **one profile per
 client** — without logging in and out or mixing chats, Gmail, Google Calendar,
-Drive, Slack, or other connected tools.
+Drive, Slack, or other connected tools. It's a third-party utility, not
+affiliated with or endorsed by Anthropic.
 
 It creates separate launcher apps (e.g. `Claude Work.app`, `Claude Personal.app`)
 in `~/Applications`, each with its own login, history, settings, and
