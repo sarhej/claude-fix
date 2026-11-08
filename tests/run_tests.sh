@@ -424,7 +424,7 @@ test_launcher_applescript_payload() {
   assert_contains "$decompiled" "launch" "AppleScript asks the helper to launch"
   assert_contains "$(cat "$app/Contents/Resources/focus.js")" "rapp" "focus sends a reopen event"
   marker="$(cat "$app/Contents/Resources/claude-fix-generated")"
-  assert_contains "$marker" "launcher-version=5" "marker records launcher version"
+  assert_contains "$marker" "launcher-version=6" "marker records launcher version"
   assert_contains "$marker" "data-dir=ClaudeWork" "marker records data dir"
   assert_contains "$marker" "claude-app=$CLAUDE_LAUNCHERS_CLAUDE_APP" "marker records Claude path"
   assert_contains "$marker" "kind=launcher" "marker records kind"
@@ -1128,24 +1128,35 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "Work has runtime helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=5" "Work marker upgraded"
+    "launcher-version=6" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix.sh" "Personal has runtime helper"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "upgrade adds the picker"
   teardown_sandbox
 }
 
 test_outdated_launchers_prompt_upgrade() {
-  test_start "outdated launchers offer upgrade before management menu"
+  test_start "running claude-fix migrates launchers from older versions automatically"
   setup_sandbox
   create_mock_claude >/dev/null
   create_outdated_launcher "Work"
-  export CLAUDE_LAUNCHERS_UPGRADE_ANSWER=y
+  create_outdated_launcher "Personal"
+  mkdir -p "$HOME/ClaudeWork"
+  echo keep >"$HOME/ClaudeWork/Cookies"
+  # Old versions put real copies on the Desktop.
+  mkdir -p "$HOME/Desktop"
+  cp -R "$HOME/Applications/Claude Work.app" "$HOME/Desktop/"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
   local out
   out="$(capture_script create)"
-  assert_contains "$out" "launchers are outdated" "warns about outdated"
-  assert_contains "$out" "Upgrading 1 launcher(s)" "auto-upgrades when accepted"
-  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "helper installed"
+  assert_contains "$out" "Updating 2 launcher(s) from an older version" "migrates without asking"
+  assert_contains "$out" "Claude Profile Switcher is already set up" "then shows the menu"
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
+    "launcher-version=6" "Work is current"
+  assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "picker added"
+  assert_file_exists "$HOME/ClaudeWork/Cookies" "sign-in kept"
+  assert_true "old Desktop copy became a shortcut" test -L "$HOME/Desktop/Claude Work.app"
+  out="$(capture_script create)"
+  assert_not_contains "$out" "from an older version" "nothing to do the second time"
   teardown_sandbox
 }
 
@@ -1662,6 +1673,62 @@ test_old_script_name_forwards() {
   teardown_sandbox
 }
 
+test_commands_migrate_first() {
+  test_start "icon and rename migrate old launchers first; help and clean don't"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_outdated_launcher "Work"
+  local out
+  out="$(capture_script help)"
+  assert_not_contains "$out" "from an older version" "help leaves launchers alone"
+  out="$(capture_script icon Work star)"
+  assert_contains "$out" "Updating 1 launcher(s) from an older version" "icon migrates first"
+  assert_contains "$out" "Updated the icon for Claude Work" "then changes the icon"
+  teardown_sandbox
+}
+
+test_launcher_upgrades_itself_after_update() {
+  test_start "a launcher upgrades all launchers once claude-fix is updated"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local app="$HOME/Applications/Claude Work.app"
+  local marker="$app/Contents/Resources/claude-fix-generated"
+  assert_contains "$(cat "$marker")" "claude-fix-path=$SCRIPT" "launcher records the claude-fix command"
+  assert_eq "6" "$(capture_script launcher-version)" "launcher-version command"
+  # A stand-in for a newer claude-fix that records being asked to upgrade.
+  local newer="$SANDBOX/newer-claude-fix"
+  printf '#!/bin/bash\ncase "$1" in launcher-version) echo %s ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
+    "${NEWER_VERSION:-7}" "$SANDBOX/upgrades.log" >"$newer"
+  chmod +x "$newer"
+  : >"$SANDBOX/upgrades.log"
+  sed -i.bak "s|^claude-fix-path=.*|claude-fix-path=$newer|" "$marker" && rm -f "$marker.bak"
+  bash "$app/Contents/Resources/claude-fix.sh" maintain
+  assert_eq "upgrade upgrade --background" "$(cat "$SANDBOX/upgrades.log")" "newer claude-fix upgrades in the background"
+  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 6 ;; upgrade) echo upgrade >>"%s" ;; esac\n' \
+    "$SANDBOX/upgrades.log" >"$newer"
+  : >"$SANDBOX/upgrades.log"
+  bash "$app/Contents/Resources/claude-fix.sh" maintain
+  assert_eq "" "$(cat "$SANDBOX/upgrades.log")" "same version leaves launchers alone"
+  teardown_sandbox
+}
+
+test_background_upgrade_is_quiet_and_locked() {
+  test_start "upgrade --background migrates outdated launchers and skips when locked"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  create_outdated_launcher "Work"
+  mkdir -p "$HOME/.claude-fix/upgrade.lock"
+  capture_script upgrade --background >/dev/null
+  assert_file_missing "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "locked: another upgrade is running"
+  rmdir "$HOME/.claude-fix/upgrade.lock"
+  capture_script upgrade --background >/dev/null
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
+    "launcher-version=6" "migrated"
+  assert_file_missing "$HOME/.claude-fix/upgrade.lock" "lock released"
+  teardown_sandbox
+}
+
 test_script_syntax() {
   test_start "script passes bash -n syntax check"
   bash -n "$SCRIPT"
@@ -1773,6 +1840,9 @@ main() {
   test_rename_rejections_and_case_change
   test_management_menu_edit_rename
   test_old_script_name_forwards
+  test_commands_migrate_first
+  test_launcher_upgrades_itself_after_update
+  test_background_upgrade_is_quiet_and_locked
 
   print_summary
 }

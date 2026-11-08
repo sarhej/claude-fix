@@ -20,8 +20,9 @@ APPS="$HOME/Applications"
 STATE_DIR="$HOME/.claude-fix"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/claude-fix.sh"
-# v5: shared runtime helper, reopen via Apple event, signed bundles, profile picker
-LAUNCHER_VERSION=5
+# v6: shared runtime helper, reopen via Apple event, signed bundles, profile picker,
+# Claude-style icons, and launchers that upgrade themselves after claude-fix updates
+LAUNCHER_VERSION=6
 ICON_COUNT=8
 # Badge symbols and colors for `icon`; these match icons/glyphs.json.
 SYMBOL_NAMES="work personal home code star heart book globe bolt leaf moon chat"
@@ -1157,31 +1158,6 @@ show_existing_setup_menu() {
   load_generated_launchers
   [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 1
 
-  if any_launcher_outdated; then
-    echo
-    echo "NOTE: Your Claude launchers are outdated."
-    echo "Upgrading rebuilds them so a click always brings back that profile's window,"
-    echo "adds $PICKER_NAME (sign-in links ask which Claude they belong to),"
-    echo "and quits extra Claude processes. Sign-ins are kept."
-    if [ -n "${CLAUDE_LAUNCHERS_UPGRADE_ANSWER:-}" ]; then
-      ans="$CLAUDE_LAUNCHERS_UPGRADE_ANSWER"
-    elif can_prompt; then
-      prompt_read "Upgrade launchers now (recommended)? [Y/n] " ans
-    else
-      ans="y"
-    fi
-    case "${ans:-y}" in
-      n|N|no|NO|No)
-        echo "  skipped upgrade"
-        ;;
-      *)
-        upgrade_setup
-        echo
-        load_generated_launchers
-        ;;
-    esac
-  fi
-
   echo
   echo "Claude Profile Switcher is already set up."
   echo
@@ -1396,6 +1372,7 @@ write_runtime_helper() {
 #   claim [BUNDLE_ID]   make BUNDLE_ID (default: the picker) handle claude:// links
 #   claim-burst         claim repeatedly while a newly launched Claude grabs the scheme
 #   icon-refresh        redraw this launcher's icon if Claude's icon or macOS changed
+#   maintain            upgrade all launchers if claude-fix was updated, else icon-refresh
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1523,7 +1500,7 @@ cmd_icon_refresh() {
   [ "$stamp" = "$(marker_value "$MARKER" claude-icon-stamp)" ] && return 0
   mkdir -p "$STATE_DIR"
   # A lock left behind by a refresh that died must not block refreshes forever.
-  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
+  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null || true
   mkdir "$lock" 2>/dev/null || return 0
   bundle=$(cd "$HERE/../.." && pwd)
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/claude-fix-icon.XXXXXX")
@@ -1554,6 +1531,27 @@ cmd_icon_refresh() {
   return 0
 }
 
+# After claude-fix is updated (for example by Homebrew), the next launch upgrades every
+# launcher in the background. exec, because the upgrade replaces this very file.
+cmd_maintain() {
+  local tool newest mine
+  tool=$(marker_value "$MARKER" claude-fix-path)
+  if [ -n "$tool" ] && [ -x "$tool" ]; then
+    newest=$("$tool" launcher-version 2>/dev/null || true)
+    mine=$(marker_value "$MARKER" launcher-version)
+    case "$newest" in
+      '' | *[!0-9]*) ;;
+      *)
+        if [ "$newest" -gt "${mine:-0}" ]; then
+          mkdir -p "$STATE_DIR"
+          exec "$tool" upgrade --background >>"$STATE_DIR/upgrade.log" 2>&1
+        fi
+        ;;
+    esac
+  fi
+  cmd_icon_refresh
+}
+
 cmd_list() {
   local app marker
   echo "Claude"
@@ -1578,10 +1576,11 @@ case "${1:-}" in
     label=$(marker_value "$MARKER" label)
     cmd_open "Claude $label" || exit 1
     if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
-      nohup /bin/bash "$HERE/claude-fix.sh" icon-refresh >/dev/null 2>&1 &
+      nohup /bin/bash "$HERE/claude-fix.sh" maintain >/dev/null 2>&1 &
     fi
     ;;
   icon-refresh) cmd_icon_refresh ;;
+  maintain) cmd_maintain ;;
   list) cmd_list ;;
   last) cat "$STATE_DIR/last-profile" 2>/dev/null || true ;;
   open) shift; cmd_open "$@" ;;
@@ -1594,7 +1593,7 @@ case "${1:-}" in
     done
     ;;
   *)
-    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh" >&2
+    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh|maintain" >&2
     exit 2
     ;;
 esac
@@ -1743,19 +1742,6 @@ launcher_is_current() {
   [ "$ver" = "$LAUNCHER_VERSION" ]
 }
 
-any_launcher_outdated() {
-  local app
-  load_generated_launchers
-  local i
-  for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
-    app="${GENERATED_APPS[$i]}"
-    if ! launcher_is_current "$app"; then
-      return 0
-    fi
-  done
-  [ "${#GENERATED_APPS[@]}" -gt 0 ] && ! picker_is_current
-}
-
 # Keep one Claude process per --user-data-dir (and one default); quit extras.
 quit_duplicate_claude_processes() {
   local killed=0
@@ -1819,6 +1805,65 @@ PY
   fi
 }
 
+# The command a launcher can call later to upgrade itself: the claude-fix on PATH
+# (Homebrew's stays put across upgrades), else this script's own file. Empty when piped.
+claude_fix_command() {
+  local path src
+  path=$(command -v claude-fix 2>/dev/null || true)
+  if [ -n "$path" ] && [ -x "$path" ] && [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+    printf '%s' "$path"
+    return 0
+  fi
+  src="${BASH_SOURCE[0]:-}"
+  [ -n "$src" ] && [ -f "$src" ] || return 1
+  printf '%s/%s' "$(cd "$(dirname "$src")" && pwd)" "$(basename "$src")"
+}
+
+# Brings launchers from older versions up to date, and turns old Desktop copies into
+# shortcuts. Runs before anything that works with launchers. Sign-ins are untouched.
+migrate_launchers() {
+  local i label outdated=() desktop
+  load_generated_launchers
+  [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 0
+  for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
+    launcher_is_current "${GENERATED_APPS[$i]}" || outdated+=("${GENERATED_LABELS[$i]}")
+    desktop="$HOME/Desktop/$(basename "${GENERATED_APPS[$i]}")"
+    if [ -d "$desktop" ] && [ ! -L "$desktop" ] && [ -f "$desktop/$MARKER_FILE" ]; then
+      rm -rf "$desktop"
+      ln -s "${GENERATED_APPS[$i]}" "$desktop"
+    fi
+  done
+  if [ "${#outdated[@]}" -eq 0 ] && picker_is_current; then
+    return 0
+  fi
+  ensure_claude_app >/dev/null 2>&1 || return 0
+  require_tools osacompile osascript
+  ensure_icons_available >/dev/null 2>&1 || true
+  if [ "${#outdated[@]}" -gt 0 ]; then
+    echo "Updating ${#outdated[@]} launcher(s) from an older version of claude-fix (sign-ins are kept)..."
+    for label in "${outdated[@]}"; do
+      if make_launcher "$label" 0 >/dev/null; then
+        echo "  -> Claude $label"
+      else
+        echo "  -> Claude $label (skipped)" >&2
+      fi
+    done
+  fi
+  picker_is_current || install_picker >/dev/null
+  load_generated_launchers
+}
+
+# Called by a launcher, in the background, when the installed claude-fix is newer.
+background_upgrade() {
+  local lock="$STATE_DIR/upgrade.lock"
+  mkdir -p "$STATE_DIR"
+  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null || true
+  mkdir "$lock" 2>/dev/null || return 0
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] claude-fix $CLAUDE_FIX_VERSION background upgrade"
+  migrate_launchers || true
+  rmdir "$lock" 2>/dev/null || true
+}
+
 upgrade_setup() {
   local quit_dupes=1
   while [ "$#" -gt 0 ]; do
@@ -1828,6 +1873,10 @@ upgrade_setup() {
         ;;
       --quit-duplicates)
         quit_dupes=1
+        ;;
+      --background)
+        background_upgrade
+        return 0
         ;;
       --*)
         echo "ERROR: unknown upgrade option: $1" >&2
@@ -1902,6 +1951,7 @@ make_launcher() {
   generate_profile_icon "$label" "$app/Contents/Resources" || true
   printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\ndata-dir=%s\nclaude-app=%s\nlauncher-version=%s\n' \
     "$label" "$dir" "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$app/$MARKER_FILE"
+  printf 'claude-fix-path=%s\n' "$(claude_fix_command || true)" >>"$app/$MARKER_FILE"
   if [ -n "$ICON_ARGS" ]; then
     printf 'icon-tool=%s\nicon-args=%s\nclaude-icon-stamp=%s\n' \
       "$ICON_TOOL" "$ICON_ARGS" "$(claude_icon_stamp "$CLAUDE_APP")" >>"$app/$MARKER_FILE"
@@ -2712,6 +2762,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
 
   cmd="${1:-create}"
   case "$cmd" in
+    clean|upgrade|version|--version|launcher-version|help|-h|--help) ;;
+    *) migrate_launchers ;;
+  esac
+  case "$cmd" in
     clean)
       shift
       clean_setup "$@"
@@ -2730,6 +2784,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
       ;;
     version|--version)
       echo "claude-fix $CLAUDE_FIX_VERSION"
+      ;;
+    launcher-version)
+      # Launchers compare this with their own to know when to upgrade themselves.
+      echo "$LAUNCHER_VERSION"
       ;;
     create)
       [ "$#" -gt 0 ] && shift

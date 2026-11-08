@@ -392,9 +392,20 @@ keeps its sign-in folder, icon, Dock pin and Desktop shortcut:
 claude-fix rename Work "Acme Corp"
 ```
 
-Use **upgrade** (menu option 8, or `upgrade` on the CLI) after updating claude-fix.
-It rebuilds every launcher, adds **Claude Profiles** if it's missing, and quits
-duplicate Claude processes. Sign-ins are kept.
+### Updating
+
+Launchers keep themselves current. Running `claude-fix` first updates any launchers
+made by an older version, and turns old Desktop copies into shortcuts. After that,
+each launcher remembers where `claude-fix` is installed: when you update it (for
+example with `brew upgrade claude-fix`), the next launcher you open updates all of them
+in the background. Sign-ins, icons and Dock pins are kept. Background updates are
+logged to `~/.claude-fix/upgrade.log`.
+
+Launchers made before 1.3.0 can't update themselves, so run `claude-fix` once after
+updating from an older version.
+
+**upgrade** (menu option 8, or `upgrade` on the CLI) rebuilds every launcher by hand
+and quits duplicate Claude processes.
 
 ### Sign-in links: choose which Claude
 
@@ -682,8 +693,8 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (95 tests). Run it directly —
-piping through `tail` or `grep` buffers output and can look hung until it finishes.
+The suite takes about **30–60 seconds** on macOS (98 tests). Run it directly.
+Piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
 ### What is covered
@@ -771,7 +782,9 @@ To regenerate the flat fallback icons after changing `icons/glyphs.json`, run
   `make_claude_launchers.sh` still works and forwards to it
 - New `rename` command and an **Edit a profile** menu entry (rename, icon, start
   fresh). Renamed profiles keep their sign-in, icon, Dock pin and Desktop shortcut
-- Launcher version 5. Run `upgrade`
+- Running `claude-fix` updates launchers from older versions automatically, and
+  launchers update themselves in the background after claude-fix is updated
+- Launcher version 6
 
 ---
 

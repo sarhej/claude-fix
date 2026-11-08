@@ -144,7 +144,7 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_DOCK_ANSWER \
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
-    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
+    CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
     CLAUDE_LAUNCHERS_NEW_NAME 2>/dev/null || true
@@ -167,7 +167,7 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_FROM_MANAGEMENT \
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
-    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
+    CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
     CLAUDE_LAUNCHERS_NEW_NAME MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
@@ -239,7 +239,7 @@ create_generated_launcher() {
   touch "$app/Contents/Resources/applet.icns"
   printf '#!/bin/bash\nexit 0\n' >"$app/Contents/Resources/claude-fix.sh"
   chmod +x "$app/Contents/Resources/claude-fix.sh"
-  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=5\n' "$label" >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=6\n' "$label" >"$app/$MARKER_REL"
   create_generated_picker
 }
 
@@ -248,7 +248,7 @@ create_generated_picker() {
   local app="$HOME/Applications/Claude Profiles.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   touch "$app/Contents/MacOS/applet"
-  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=5\n' >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=6\n' >"$app/$MARKER_REL"
 }
 
 # Old v1-style launcher (always open -n; no focus helper) for upgrade tests.
