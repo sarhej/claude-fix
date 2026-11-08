@@ -25,12 +25,21 @@ jobs:
         run: brew install shellcheck
 
       - name: ShellCheck
-        run: shellcheck make_claude_launchers.sh tests/run_tests.sh tests/lib/harness.sh
+        run: shellcheck claude-fix make_claude_launchers.sh tests/run_tests.sh tests/lib/harness.sh
+
+      - name: Parse with macOS's own bash 3.2
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash -n claude-fix
+          /bin/bash -n make_claude_launchers.sh
+          /bin/bash -n tests/run_tests.sh
+          /bin/bash -n tests/lib/harness.sh
 
       - name: Check the generated runtime helper
         run: |
           tmp=$(mktemp -d)
-          bash -c 'source make_claude_launchers.sh; write_runtime_helper "$1"' _ "$tmp"
+          /bin/bash -c 'source ./claude-fix; write_runtime_helper "$1"' _ "$tmp"
+          /bin/bash -n "$tmp/claude-fix.sh"
           shellcheck "$tmp/claude-fix.sh"
           osacompile -l JavaScript -o "$tmp/focus.scpt" "$tmp/focus.js"
           osacompile -l JavaScript -o "$tmp/claim.scpt" "$tmp/claim.js"
@@ -68,5 +77,5 @@ jobs:
           name: icon-previews
           path: icon-previews
 
-      - name: Run test suite
-        run: bash tests/run_tests.sh
+      - name: Run test suite with macOS's bash 3.2
+        run: /bin/bash tests/run_tests.sh

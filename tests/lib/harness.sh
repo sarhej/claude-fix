@@ -1,10 +1,12 @@
 #!/bin/bash
-# Shared test helpers for make_claude_launchers.sh
+# Code passed to "$BASH" -c is single-quoted on purpose; it expands in the child shell.
+# shellcheck disable=SC2016
+# Shared test helpers for claude-fix
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCRIPT="$REPO_ROOT/make_claude_launchers.sh"
+SCRIPT="$REPO_ROOT/claude-fix"
 MARKER_REL="Contents/Resources/claude-fix-generated"
 
 TESTS_RUN=0
@@ -144,7 +146,8 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
     CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
-    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG 2>/dev/null || true
+    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
+    CLAUDE_LAUNCHERS_NEW_NAME 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -166,7 +169,8 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
     CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
-    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
+    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
+    CLAUDE_LAUNCHERS_NEW_NAME MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
 # Minimal fake Claude.app with an icon resource.
@@ -300,8 +304,9 @@ TOOL
   export CLAUDE_LAUNCHERS_ICON_TOOL="$tool"
 }
 
+# Run the script with the same bash as the tests, so CI can check macOS's /bin/bash 3.2.
 run_script() {
-  bash "$SCRIPT" "$@"
+  "$BASH" "$SCRIPT" "$@"
 }
 
 capture_script() {
@@ -309,31 +314,31 @@ capture_script() {
 }
 
 slug_via_script() {
-  bash -c 'source "$1"; slug "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; slug "$2"' _ "$SCRIPT" "$1"
 }
 
 profile_icon_index_via_script() {
-  bash -c 'source "$1"; profile_icon_index "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; profile_icon_index "$2"' _ "$SCRIPT" "$1"
 }
 
 profile_icon_path_via_script() {
-  bash -c 'source "$1"; profile_icon_path "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; profile_icon_path "$2"' _ "$SCRIPT" "$1"
 }
 
 profile_icon_letter_via_script() {
-  bash -c 'source "$1"; profile_icon_letter "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; profile_icon_letter "$2"' _ "$SCRIPT" "$1"
 }
 
 profile_data_initialized_via_script() {
-  bash -c 'source "$1"; profile_data_initialized "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; profile_data_initialized "$2"' _ "$SCRIPT" "$1"
 }
 
 dock_remove_pins_via_script() {
-  bash -c 'source "$1"; dock_remove_app_pins "$2" "$3"' _ "$SCRIPT" "$1" "$2"
+  "$BASH" -c 'source "$1"; dock_remove_app_pins "$2" "$3"' _ "$SCRIPT" "$1" "$2"
 }
 
 dock_file_url_via_script() {
-  bash -c 'source "$1"; dock_file_url "$2"' _ "$SCRIPT" "$1"
+  "$BASH" -c 'source "$1"; dock_file_url "$2"' _ "$SCRIPT" "$1"
 }
 
 create_mock_dock_plist() {

@@ -21,7 +21,7 @@ jobs:
 
       - name: Check the tag matches the script version
         run: |
-          version=$(sed -n 's/^CLAUDE_FIX_VERSION="\(.*\)"$/\1/p' make_claude_launchers.sh)
+          version=$(sed -n 's/^CLAUDE_FIX_VERSION="\(.*\)"$/\1/p' claude-fix)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match CLAUDE_FIX_VERSION=$version"
             exit 1

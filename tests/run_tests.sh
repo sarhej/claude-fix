@@ -1,6 +1,8 @@
 #!/bin/bash
+# Code passed to "$BASH" -c is single-quoted on purpose; it expands in the child shell.
+# shellcheck disable=SC2016
 #
-# Integration + edge-case tests for make_claude_launchers.sh
+# Integration + edge-case tests for claude-fix
 # Runs in an isolated temp HOME — never touches your real Claude setup.
 #
 set -euo pipefail
@@ -44,7 +46,7 @@ test_help() {
 test_help_aliases() {
   test_start "help aliases (-h, --help)"
   setup_sandbox
-  assert_contains "$(capture_script -h)" "make_claude_launchers.sh" "-h works"
+  assert_contains "$(capture_script -h)" "claude-fix - manage isolated" "-h works"
   assert_contains "$(capture_script --help)" "create [options]" "--help works"
   teardown_sandbox
 }
@@ -58,7 +60,7 @@ test_piped_execution_works() {
   code=$?
   set -e
   assert_eq "0" "$code" "piped bash exits 0"
-  assert_contains "$out" "make_claude_launchers.sh" "piped bash runs main dispatch"
+  assert_contains "$out" "claude-fix - manage isolated" "piped bash runs main dispatch"
   teardown_sandbox
 }
 
@@ -299,6 +301,7 @@ test_management_menu_start_fresh_profile() {
   mkdir -p "$data"
   printf '{"oauth:tokenCache":"stale"}\n' >"$data/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=3
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
   export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
   export CLAUDE_LAUNCHERS_DOCK_ANSWER=n
@@ -322,6 +325,7 @@ test_start_fresh_rebuilds_launcher() {
   mkdir -p "$HOME/ClaudeDrd"
   printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=3
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
   export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
   export CLAUDE_LAUNCHERS_DOCK_ANSWER=n
@@ -345,6 +349,7 @@ test_start_fresh_repins_dock() {
   mkdir -p "$HOME/ClaudeDrd"
   printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=3
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
   export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
   local out urls
@@ -371,6 +376,7 @@ test_start_fresh_pins_dock_when_not_pinned() {
   mkdir -p "$HOME/ClaudeDrd"
   printf '{"oauth:tokenCache":"stale"}\n' >"$HOME/ClaudeDrd/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=3
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=y
   export CLAUDE_LAUNCHERS_LAUNCH_ANSWER=n
   local out urls before_count after_count
@@ -895,9 +901,9 @@ test_icons_download_to_cache() {
   cp "$REPO_ROOT/icons/"*.icns "$SANDBOX/icon-src/"
   cp "$REPO_ROOT/icons/generate_icons.swift" "$REPO_ROOT/icons/glyphs.json" "$SANDBOX/icon-src/"
   # Simulate curl | bash: run a copy of the script with no sibling icons/ folder.
-  cp "$SCRIPT" "$SANDBOX/make_claude_launchers.sh"
+  cp "$SCRIPT" "$SANDBOX/claude-fix"
   local saved_script="$SCRIPT"
-  SCRIPT="$SANDBOX/make_claude_launchers.sh"
+  SCRIPT="$SANDBOX/claude-fix"
   unset CLAUDE_LAUNCHERS_ICONS_DIR
   export CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD=1
   export CLAUDE_LAUNCHERS_ICONS_BASE="file://$SANDBOX/icon-src"
@@ -1088,6 +1094,7 @@ test_start_fresh_declined_keeps_data() {
   mkdir -p "$data"
   printf '{"oauth:tokenCache":"keep"}\n' >"$data/config.json"
   export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=3
   export CLAUDE_LAUNCHERS_RESET_PROFILE_ANSWER=n
   local out
   out="$(capture_script create)"
@@ -1102,7 +1109,7 @@ test_management_menu_cancel() {
   test_start "management menu option 9 cancels without changes"
   setup_sandbox
   create_generated_launcher "Personal"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
   local out
   out="$(capture_script create)"
   assert_contains "$out" "Cancelled. Nothing changed." "cancel message"
@@ -1133,7 +1140,7 @@ test_outdated_launchers_prompt_upgrade() {
   create_mock_claude >/dev/null
   create_outdated_launcher "Work"
   export CLAUDE_LAUNCHERS_UPGRADE_ANSWER=y
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
   local out
   out="$(capture_script create)"
   assert_contains "$out" "launchers are outdated" "warns about outdated"
@@ -1174,7 +1181,7 @@ test_management_menu_clean_keep_data() {
   local data="$HOME/ClaudeWork"
   mkdir -p "$data"
   echo "keep" >"$data/history.db"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=7
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=6
   local out
   out="$(capture_script create)"
   assert_contains "$out" "Removing launcher: Claude Work.app" "removes launcher"
@@ -1190,7 +1197,7 @@ test_management_menu_clean_purge() {
   local data="$HOME/ClaudeWork"
   mkdir -p "$data"
   echo "secret" >"$data/secret.txt"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=8
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=7
   export CLAUDE_LAUNCHERS_PURGE_ANSWER=y
   local out
   out="$(capture_script create)"
@@ -1271,7 +1278,7 @@ test_picker_not_treated_as_profile() {
   capture_script create Work >/dev/null
   mkdir -p "$HOME/ClaudeProfiles"
   echo keep >"$HOME/ClaudeProfiles/data"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
   local out
   out="$(capture_script create)"
   assert_not_contains "$out" "Claude Profiles" "management menu does not list the picker"
@@ -1398,11 +1405,12 @@ test_icon_command_builtin_and_claude() {
 }
 
 test_management_menu_change_icon() {
-  test_start "management menu option 6 changes a profile's icon"
+  test_start "management menu edit changes a profile's icon"
   setup_sandbox
   create_mock_claude >/dev/null
   capture_script create Work >/dev/null
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=6
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=2
   export CLAUDE_LAUNCHERS_ICON_ANSWER="globe"
   local out
   out="$(capture_script create)"
@@ -1496,7 +1504,7 @@ test_icon_choices_symbol_color_letter() {
   assert_file_missing "$HOME/.claude-fix/custom-icons/ClaudeClienta.icns" "a color replaces the image"
   assert_eq "icon --symbol moon --color sky" "$(cat "$icon")" "color applies after an image"
   assert_eq "--no-badge --color pink" \
-    "$(bash -c 'source "$1"; mkdir -p "$HOME/.claude-fix/custom-icons"; printf "symbol=letter:?\ncolor=pink\n" >"$(icon_choice_file X)"; icon_tool_args X' _ "$SCRIPT")" \
+    "$("$BASH" -c 'source "$1"; mkdir -p "$HOME/.claude-fix/custom-icons"; printf "symbol=letter:?\ncolor=pink\n" >"$(icon_choice_file X)"; icon_tool_args X' _ "$SCRIPT")" \
     "no ? glob in tool arguments"
   capture_script icon ClientA default >/dev/null
   assert_file_missing "$conf" "default clears the choice"
@@ -1553,7 +1561,7 @@ test_icon_names_match_glyphs_json() {
   test_start "the script's symbol and color names match icons/glyphs.json"
   setup_sandbox
   local json="$REPO_ROOT/icons/glyphs.json" names name
-  names="$(bash -c 'source "$1"; printf "%s|%s" "$SYMBOL_NAMES" "$COLOR_NAMES"' _ "$SCRIPT")"
+  names="$("$BASH" -c 'source "$1"; printf "%s|%s" "$SYMBOL_NAMES" "$COLOR_NAMES"' _ "$SCRIPT")"
   for name in ${names%%|*}; do
     assert_true "symbol $name is defined" grep -q "\"name\": \"$name\"" "$json"
   done
@@ -1562,6 +1570,95 @@ test_icon_names_match_glyphs_json() {
   done
   assert_eq "$(grep -c '"name": ' "$json")" "$(printf '%s' "${names%%|*}" | wc -w | tr -d ' ')" \
     "no symbol is missing from the script"
+  teardown_sandbox
+}
+
+test_rename_keeps_sign_in_icon_and_desktop() {
+  test_start "rename keeps the profile's sign-in folder, icon choice and Desktop shortcut"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  install_fake_icon_tool
+  capture_script create --desktop Work >/dev/null
+  mkdir -p "$HOME/ClaudeWork"
+  echo keep >"$HOME/ClaudeWork/Cookies"
+  capture_script icon Work code teal >/dev/null
+  printf 'Claude Work\n' >"$HOME/.claude-fix/last-profile"
+  local out
+  out="$(capture_script rename Work "Acme Corp")"
+  local app="$HOME/Applications/Claude Acme Corp.app"
+  assert_contains "$out" "Renamed Claude Work to Claude Acme Corp" "reports rename"
+  assert_file_missing "$HOME/Applications/Claude Work.app" "old launcher removed"
+  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "data-dir=ClaudeWork" "keeps the sign-in folder"
+  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "label=Acme Corp" "new label"
+  assert_file_exists "$HOME/ClaudeWork/Cookies" "sign-in data untouched"
+  assert_eq "icon --symbol code --color teal" "$(cat "$app/Contents/Resources/applet.icns")" "icon choice carried over"
+  assert_true "Desktop shortcut renamed" test -L "$HOME/Desktop/Claude Acme Corp.app"
+  assert_file_missing "$HOME/Desktop/Claude Work.app" "old Desktop shortcut removed"
+  assert_eq "Claude Acme Corp" "$(cat "$HOME/.claude-fix/last-profile")" "picker remembers the new name"
+  capture_script upgrade --no-quit-duplicates >/dev/null
+  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "data-dir=ClaudeWork" "upgrade keeps the folder"
+  local code
+  set +e
+  out="$(capture_script create Work 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "a new Work can't take over Acme's sign-in"
+  assert_contains "$out" "already belongs to Claude Acme Corp" "explains the conflict"
+  teardown_sandbox
+}
+
+test_rename_rejections_and_case_change() {
+  test_start "rename refuses missing or taken names and allows a case change"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work Personal >/dev/null
+  local out code
+  set +e
+  out="$(capture_script rename Work Personal 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "taken name refused"
+  assert_contains "$out" "already exists" "explains taken name"
+  set +e
+  capture_script rename Nobody Other >/dev/null 2>&1
+  code=$?
+  set -e
+  assert_eq "1" "$code" "unknown profile refused"
+  set +e
+  capture_script rename Work Profiles >/dev/null 2>&1
+  code=$?
+  set -e
+  assert_eq "1" "$code" "reserved name refused"
+  out="$(capture_script rename Personal personal)"
+  assert_contains "$out" "Renamed Claude Personal to Claude personal" "case-only rename works"
+  assert_contains "$(cat "$HOME/Applications/Claude personal.app/Contents/Resources/claude-fix-generated")" \
+    "data-dir=ClaudePersonal" "case change keeps the folder"
+  teardown_sandbox
+}
+
+test_management_menu_edit_rename() {
+  test_start "management menu edit renames a profile"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=5
+  export CLAUDE_LAUNCHERS_EDIT_CHOICE=1
+  export CLAUDE_LAUNCHERS_NEW_NAME="Day Job"
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Edit a profile" "menu offers edit"
+  assert_contains "$out" "Renamed Claude Work to Claude Day Job" "renamed from the menu"
+  assert_file_exists "$HOME/Applications/Claude Day Job.app" "new launcher"
+  teardown_sandbox
+}
+
+test_old_script_name_forwards() {
+  test_start "make_claude_launchers.sh still works and forwards to claude-fix"
+  setup_sandbox
+  local out
+  out="$(bash "$REPO_ROOT/make_claude_launchers.sh" help 2>&1)"
+  assert_contains "$out" "claude-fix - manage isolated" "old name runs claude-fix"
+  assert_contains "$out" "rename <label> <new>" "help lists rename"
   teardown_sandbox
 }
 
@@ -1672,6 +1769,10 @@ main() {
   test_icon_refreshes_after_claude_update
   test_icon_without_tool_notes_requirement
   test_icon_names_match_glyphs_json
+  test_rename_keeps_sign_in_icon_and_desktop
+  test_rename_rejections_and_case_change
+  test_management_menu_edit_rename
+  test_old_script_name_forwards
 
   print_summary
 }

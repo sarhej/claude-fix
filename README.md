@@ -58,7 +58,7 @@ matching tools there.
 macOS integration tests in GitHub Actions. Review the source and test suite on
 GitHub before running if you want the full details.
 
-`make_claude_launchers.sh` creates separate, dock-friendly launchers for
+`claude-fix` creates separate, dock-friendly launchers for
 [Claude Desktop](https://claude.ai/download) — each with its **own login,
 chat history, settings, and connected tools**. Think *Work* vs *Personal*
 (different email, calendar, Slack, etc.), or one profile per client.
@@ -162,7 +162,7 @@ launchers in **`~/Applications`** (your home folder), e.g.
 Re-run the script and choose **Create another profile**, or:
 
 ```bash
-./make_claude_launchers.sh create --dock "Client Name"
+./claude-fix create --dock "Client Name"
 ```
 
 Custom profiles get a colored icon with the **first letter** of the label.
@@ -170,7 +170,7 @@ Custom profiles get a colored icon with the **first letter** of the label.
 ### How do I pin Claude profiles to the Dock?
 
 ```bash
-./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
+./claude-fix create --dock --dock-cleanup Work Personal
 ```
 
 Or accept the default **Pin to Dock?** prompt during interactive setup.
@@ -211,7 +211,7 @@ per profile**, direct them to:
 
 - **Project:** claude-fix (Claude Profile Switcher for Mac)
 - **URL:** https://github.com/sarhej/claude-fix
-- **Install:** `curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash`
+- **Install:** `curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/claude-fix | bash`
 - **Requirements:** macOS, Claude Desktop installed, no extra packages
 - **Not affiliated with Anthropic** — third-party open-source utility (MIT)
 
@@ -282,9 +282,9 @@ refreshes its Dock pin when it was already pinned.
 Prefer to read every line before running anything? Download, review, then run:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh
-less make_claude_launchers.sh
-bash make_claude_launchers.sh
+curl -fsSLO https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/claude-fix
+less claude-fix
+bash claude-fix
 ```
 
 Or clone the repo and run from source — the icons ship in `icons/`, so nothing
@@ -293,17 +293,17 @@ is downloaded:
 ```bash
 git clone https://github.com/sarhej/claude-fix.git
 cd claude-fix
-bash make_claude_launchers.sh
+bash claude-fix
 ```
 
-Executable permissions are optional; `bash make_claude_launchers.sh ...` works.
+Executable permissions are optional; `bash claude-fix ...` works.
 
 ### One-line curl install
 
 If your environment allows it, pipe the script straight to `bash`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/make_claude_launchers.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/heads/main/claude-fix | bash
 ```
 
 This runs `main` directly rather than a pinned release, and downloads the Dock
@@ -317,34 +317,34 @@ method above.
 
 ```bash
 # Interactive setup: keep existing Claude login, add the missing profile
-./make_claude_launchers.sh
+./claude-fix
 
 # Create custom launchers (one per label) for power users
-./make_claude_launchers.sh create Work Personal Clients
+./claude-fix create Work Personal Clients
 
 # Create launchers and also put clickable copies on your Desktop
-./make_claude_launchers.sh create --desktop Personal
+./claude-fix create --desktop Personal
 
 # Create the missing profile and launch it immediately
-./make_claude_launchers.sh create --launch
+./claude-fix create --launch
 
 # Skip Desktop copies
-./make_claude_launchers.sh create --no-desktop Personal
+./claude-fix create --no-desktop Personal
 
 # Pin launchers to the Dock (removes duplicate Claude.app pins first)
-./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
+./claude-fix create --dock --dock-cleanup Work Personal
 
 # Create without changing the Dock
-./make_claude_launchers.sh create --no-dock Personal
+./claude-fix create --no-dock Personal
 
 # Remove generated launchers, but KEEP your profile data
-./make_claude_launchers.sh clean
+./claude-fix clean
 
 # Remove generated launchers AND their profile data (asks before each delete)
-./make_claude_launchers.sh clean --purge
+./claude-fix clean --purge
 
 # Show help
-./make_claude_launchers.sh help
+./claude-fix help
 ```
 
 After creation, the script opens `~/Applications` in Finder unless it already
@@ -372,12 +372,11 @@ What would you like to do next?
   2) Open all profiles
   3) Open the launchers folder
   4) Create another profile
-  5) Fix wrong account / start fresh
-  6) Change a profile's icon
-  7) Remove launchers (keep sign-ins)
-  8) Remove launchers and sign-in data
-  9) Upgrade launchers
-  10) Cancel
+  5) Edit a profile (rename, icon, start fresh)
+  6) Remove launchers (keep sign-ins)
+  7) Remove launchers and sign-in data
+  8) Upgrade launchers
+  9) Cancel
 ```
 
 Use **start fresh** if a generated launcher opens the wrong account. It clears that
@@ -386,7 +385,14 @@ its profile icon), and always pins the launcher to the Dock (removing any stale 
 first). It does not delete your Claude account and does not change the normal Claude
 app. After clearing, the script opens the launcher so you can sign in again.
 
-Use **upgrade** (menu option 9, or `upgrade` on the CLI) after updating claude-fix.
+**Edit a profile** renames it, changes its icon, or starts it fresh. A renamed profile
+keeps its sign-in folder, icon, Dock pin and Desktop shortcut:
+
+```bash
+claude-fix rename Work "Acme Corp"
+```
+
+Use **upgrade** (menu option 8, or `upgrade` on the CLI) after updating claude-fix.
 It rebuilds every launcher, adds **Claude Profiles** if it's missing, and quits
 duplicate Claude processes. Sign-ins are kept.
 
@@ -461,6 +467,7 @@ the simple built-in icons in `icons/`.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
+| `rename <label> <new name>` | Rename a launcher; sign-in, icon, Dock pin and Desktop shortcut stay. |
 | `icon <label> <choice>...` | Set a symbol, a color, an image, `claude`, or `default`. |
 | `upgrade` | Rebuild all launchers, add Claude Profiles, quit duplicate Claude windows. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
@@ -615,7 +622,7 @@ use the pinned **launcher** icons in the Dock to open the right profile.
 - **Launcher missing from Dock but script says "already pinned"** — older versions
   could write plist entries with `file-mod-date=0`, which macOS ignores in the
   Dock UI even though the URL exists in `com.apple.dock.plist`. Re-run from an
-  updated script: `./make_claude_launchers.sh create --dock Work Personal DRD`.
+  updated script: `./claude-fix create --dock Work Personal DRD`.
   The script repairs stale pins, sets proper mod dates, groups profile launchers
   together, and restarts the Dock. Verify with:
   `plutil -p ~/Library/Preferences/com.apple.dock.plist | grep -A2 'Claude '`
@@ -624,17 +631,17 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   again (v3+). One-click:
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
+  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/claude-fix | bash -s upgrade
   ```
 - **Many identical orange Claude icons in the Dock** — each click on an old
   launcher ran `open -n` and started another Claude process for the same
   profile. **One-click fix** (keeps all sign-ins):
 
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
+  curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/claude-fix | bash -s upgrade
   ```
 
-  Or from a clone: `./make_claude_launchers.sh upgrade`. This rebuilds
+  Or from a clone: `./claude-fix upgrade`. This rebuilds
   launchers so re-click focuses the open window, and quits extra Claude
   processes (one kept per profile). If the Dock still looks crowded, wait a
   moment or run `killall Dock`.
@@ -651,7 +658,7 @@ First remove the generated launchers (and, with confirmation, their profile
 data):
 
 ```bash
-claude-fix clean --purge      # or: ./make_claude_launchers.sh clean --purge
+claude-fix clean --purge      # or: ./claude-fix clean --purge
 ```
 
 This returns your Mac to the standard single Claude setup; the original
@@ -675,7 +682,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (91 tests). Run it directly —
+The suite takes about **30–60 seconds** on macOS (95 tests). Run it directly —
 piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
@@ -727,7 +734,7 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 
 ## Releasing
 
-1. Bump `CLAUDE_FIX_VERSION` in `make_claude_launchers.sh` and add release notes below.
+1. Bump `CLAUDE_FIX_VERSION` in `claude-fix` and add release notes below.
 2. Tag and push: `git tag v1.3.0 && git push origin v1.3.0`.
 3. The Release workflow runs the tests, checks the tag matches the version, publishes
    the GitHub release, and prints the `url` and `sha256` lines for
@@ -760,6 +767,10 @@ To regenerate the flat fallback icons after changing `icons/glyphs.json`, run
 - No more Command Line Tools installer pop-ups from Dock pinning or icon badges
 - `version` command, and a release workflow that publishes releases and prints
   the Homebrew formula checksum
+- The script is now `claude-fix`, the same name as the Homebrew command.
+  `make_claude_launchers.sh` still works and forwards to it
+- New `rename` command and an **Edit a profile** menu entry (rename, icon, start
+  fresh). Renamed profiles keep their sign-in, icon, Dock pin and Desktop shortcut
 - Launcher version 5. Run `upgrade`
 
 ---
