@@ -655,7 +655,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (86 tests). Run it directly —
+The suite takes about **30–60 seconds** on macOS (87 tests). Run it directly —
 piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 

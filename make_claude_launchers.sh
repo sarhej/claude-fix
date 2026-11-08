@@ -1128,7 +1128,7 @@ show_existing_setup_menu() {
       local new_labels=()
       read -r -a new_labels <<< "$names"
       export CLAUDE_LAUNCHERS_FROM_MANAGEMENT=1
-      create_setup "${new_labels[@]}"
+      create_setup ${new_labels[@]+"${new_labels[@]}"}
       ;;
     5)
       select_generated_launcher "Which profile should start fresh?"
@@ -1322,6 +1322,10 @@ data_dir_for() {
     return 0
   fi
   marker="$APPS/$name.app/Contents/Resources/claude-fix-generated"
+  # A launcher knows its own profile, even if it was moved out of ~/Applications.
+  if [ "Claude $(marker_value "$MARKER" label)" = "$name" ]; then
+    marker="$MARKER"
+  fi
   slug=$(marker_value "$marker" data-dir)
   [ -n "$slug" ] || return 1
   printf '%s/%s' "$HOME" "$slug"
@@ -1394,7 +1398,11 @@ cmd_list() {
 }
 
 cmd_claim() {
-  osascript -l JavaScript "$HERE/claim.js" "${1:-$PICKER_ID}" "${SCHEMES[@]}" >/dev/null 2>&1
+  local id="${1:-$PICKER_ID}"
+  if [ "$id" = "$PICKER_ID" ] && [ ! -d "$PICKER_APP" ]; then
+    return 1
+  fi
+  osascript -l JavaScript "$HERE/claim.js" "$id" "${SCHEMES[@]}" >/dev/null 2>&1
 }
 
 case "${1:-}" in
@@ -1410,7 +1418,7 @@ case "${1:-}" in
     # Claude takes claude:// a few seconds into launch (up to ~20s on a cold start).
     for delay in 1 2 3 4 5 7 8 15 15; do
       sleep "$delay"
-      cmd_claim
+      cmd_claim || break
     done
     ;;
   *)
@@ -1441,12 +1449,13 @@ function run(argv) {
     event.setParamDescriptorForKeyword($.NSAppleEventDescriptor.descriptorWithString(url), code('----'));
   }
   var error = Ref();
-  var reply = event.sendEventWithOptionsTimeoutError(1, 10, error);
+  // Wait for the reply (kAEWaitReply) so a refused event, such as Automation denied, is reported.
+  var reply = event.sendEventWithOptionsTimeoutError(3, 10, error);
   var app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
   if (!app.isNil()) {
     app.activateWithOptions(3);
   }
-  if (reply.isNil()) {
+  if (!reply || reply.isNil() || (error[0] && !error[0].isNil())) {
     throw new Error('Apple event was not delivered');
   }
 }
@@ -1780,7 +1789,7 @@ icon_setup() {
   label=${label#Claude }
   spec="$2"
   app="$APPS/Claude $label.app"
-  if [ ! -f "$app/$MARKER_FILE" ]; then
+  if [ ! -f "$app/$MARKER_FILE" ] || [ "$(marker_value "$app/$MARKER_FILE" "kind")" = "picker" ]; then
     echo "ERROR: there's no generated launcher named Claude $label." >&2
     exit 1
   fi

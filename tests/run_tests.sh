@@ -1438,6 +1438,35 @@ test_reserved_profiles_label_and_version() {
   teardown_sandbox
 }
 
+test_review_regressions() {
+  test_start "icon never rebuilds the picker; moved launchers still work"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local out code
+  set +e
+  out="$(capture_script icon Profiles home 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "icon refuses the picker"
+  assert_contains "$(cat "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix-generated")" \
+    "kind=picker" "picker left intact"
+  mkdir -p "$SANDBOX/elsewhere"
+  mv "$HOME/Applications/Claude Work.app" "$SANDBOX/elsewhere/"
+  install_helper_fakes "  88 $CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/MacOS/Claude --user-data-dir=$HOME/ClaudeWork"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$SANDBOX/elsewhere/Claude Work.app/Contents/Resources/claude-fix.sh" launch
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 88" "moved launcher finds its profile"
+  rm -rf "$HOME/Applications/Claude Profiles.app"
+  : >"$SANDBOX/osascript.log"
+  set +e
+  PATH="$SANDBOX/fakebin:$PATH" bash "$SANDBOX/elsewhere/Claude Work.app/Contents/Resources/claude-fix.sh" claim
+  code=$?
+  set -e
+  assert_ne "0" "$code" "no claim for a removed picker"
+  assert_eq "" "$(cat "$SANDBOX/osascript.log")" "claim.js never runs without the picker"
+  teardown_sandbox
+}
+
 test_script_syntax() {
   test_start "script passes bash -n syntax check"
   bash -n "$SCRIPT"
@@ -1540,6 +1569,7 @@ main() {
   test_management_menu_change_icon
   test_desktop_shortcut_is_symlink_and_cleaned
   test_reserved_profiles_label_and_version
+  test_review_regressions
 
   print_summary
 }
