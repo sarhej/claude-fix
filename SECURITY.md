@@ -15,8 +15,8 @@ The script:
 - Compiles `icons/generate_icons.swift` once with your Command Line Tools into
   `~/.claude-fix/icon-tool`, and uses it to draw launcher icons from the icon of
   your installed `Claude.app`. The icon is read, never modified.
-- For profiles switched to own-app mode (`experiment on`), makes an unmodified APFS
-  clone of `Claude.app` in `~/.claude-fix/apps` and sets a Finder custom icon on it.
+- Unless a profile is switched to `own-app off`, makes an unmodified APFS
+  clone of `Claude.app` for it in `~/.claude-fix/apps` and sets a Finder custom icon on it.
   If such a profile is pinned, it also builds a small watcher with `swiftc` and runs it
   as a user launch agent. The watcher only looks at apps launched from
   `~/.claude-fix/apps`: when one starts without a profile, it stops it and opens the

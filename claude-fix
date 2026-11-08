@@ -22,7 +22,7 @@ MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/claude-fix.sh"
 # v7: shared runtime helper, reopen via Apple event, signed bundles, profile picker that
 # also runs follow-up work, Claude-style icons, self-upgrade, optional own-app copies
-LAUNCHER_VERSION=8
+LAUNCHER_VERSION=9
 ICON_COUNT=8
 # Badge symbols and colors for `icon`; these match icons/glyphs.json.
 SYMBOL_NAMES="work personal home code star heart book globe bolt leaf moon chat"
@@ -1249,9 +1249,10 @@ Commands:
                        a letter, none), a color ($COLOR_NAMES, #RRGGBB),
                        an image file, claude (Claude's own icon), or default
   rename <label> <new> Rename a launcher; its sign-in, icon and Dock pin stay
-  experiment on|off|status <label>
-                       Experimental: run a profile from its own copy of Claude, so
-                       the Dock and the app switcher show its icon
+  own-app on|off|status <label>
+                       Each profile runs from its own copy of Claude, so the Dock
+                       and the app switcher show its icon. "off" runs it from
+                       Claude.app instead
   upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
@@ -1376,7 +1377,7 @@ write_runtime_helper() {
 #   open NAME [URL]     open a profile by name, handing it URL if given
 #   claim [BUNDLE_ID]   make BUNDLE_ID (default: the picker) handle claude:// links
 #   icon-refresh        redraw this launcher's icon if Claude's icon or macOS changed
-#   own-app-sync        (own-app profiles) create or refresh the profile's copy of Claude
+#   own-app-sync        create or refresh the profile's own copy of Claude
 #   background          (Claude Profiles) upgrade launchers if claude-fix was updated,
 #                       and refresh launcher icons
 set -uo pipefail
@@ -1419,6 +1420,22 @@ data_dir_for() {
   slug=$(marker_value "$marker" data-dir)
   [ -n "$slug" ] || return 1
   printf '%s/%s' "$HOME" "$slug"
+}
+
+# Profiles run from their own copy of Claude unless switched off with "own-app off".
+own_app_enabled() {
+  [ -n "$1" ] && [ ! -f "$STATE_DIR/own-app-off/$1" ]
+}
+
+# PID of a profile's main Claude process, whichever copy of Claude runs it.
+running_profile_pid() {
+  local pid args
+  while read -r pid args; do
+    case "$args " in
+      *"/Contents/MacOS/Claude --user-data-dir=$1 "*) printf '%s' "$pid"; return 0 ;;
+    esac
+  done < <(ps -axww -o pid=,args= 2>/dev/null)
+  return 1
 }
 
 # PID of the main Claude process for a data dir (empty dir = the normal profile).
@@ -1471,10 +1488,18 @@ own_app_sync() {
     done
   fi
   stamp=$({ cat "$src/Contents/Info.plist"; ls -ln "$src/Contents/MacOS/Claude"; } 2>/dev/null | cksum | awk '{print $1}')
+  # Never swap the copy out from under a running profile; it is refreshed on the next open.
+  if [ -d "$dest" ] && [ "$stamp" != "$(cat "$dir/source.stamp" 2>/dev/null)" ] &&
+    running_profile_pid "$HOME/$slug" >/dev/null; then
+    stamp=$(cat "$dir/source.stamp" 2>/dev/null)
+  fi
   if [ ! -d "$dest" ] || [ "$stamp" != "$(cat "$dir/source.stamp" 2>/dev/null)" ]; then
     rm -rf "$dir/.new.app"
-    if ! cp -cR "$src" "$dir/.new.app" 2>/dev/null && ! cp -R "$src" "$dir/.new.app"; then
+    # Only an APFS clone, which costs almost no space. Elsewhere the profile keeps
+    # running from Claude.app rather than taking a full copy of it.
+    if ! cp -cR "$src" "$dir/.new.app" 2>/dev/null; then
       rm -rf "$dir/.new.app"
+      [ -d "$dest" ] || rmdir "$dir" 2>/dev/null
       return 1
     fi
     # A copy of a downloaded app would ask "downloaded from the Internet?" again.
@@ -1505,15 +1530,19 @@ cmd_open() {
     echo "There's no Claude profile named \"$name\"." >&2
     return 1
   fi
-  if [ -n "$data" ] && [ -f "$STATE_DIR/own-app/$(basename "$data")" ]; then
-    if own=$(own_app_sync "${name#Claude }" "$(basename "$data")" "$app" \
-      "$APPS/$name.app/Contents/Resources/applet.icns"); then
+  mkdir -p "$STATE_DIR" && printf '%s\n' "$name" >"$STATE_DIR/last-profile"
+  if [ -n "$data" ]; then
+    pid=$(running_profile_pid "$data") || pid=""
+    if [ -z "$pid" ] && own_app_enabled "$(basename "$data")" &&
+      own=$(own_app_sync "${name#Claude }" "$(basename "$data")" "$app" \
+        "$APPS/$name.app/Contents/Resources/applet.icns"); then
       app="$own"
     fi
+  else
+    pid=$(profile_pid "$app" "") || pid=""
   fi
-  mkdir -p "$STATE_DIR" && printf '%s\n' "$name" >"$STATE_DIR/last-profile"
 
-  if pid=$(profile_pid "$app" "$data"); then
+  if [ -n "$pid" ]; then
     # A reopen event shows the window even when it was closed; activation alone does not.
     if ! osascript -l JavaScript "$HERE/focus.js" "$pid" "$url" >/dev/null 2>&1; then
       if [ -n "$url" ]; then
@@ -1930,14 +1959,8 @@ claude_fix_command() {
 # shortcuts. Runs before anything that works with launchers. Sign-ins are untouched.
 migrate_launchers() {
   local i label outdated=() desktop old
-  # The earlier link-app experiment becomes own-app mode.
-  if [ -d "$STATE_DIR/link" ]; then
-    mkdir -p "$STATE_DIR/own-app"
-    for old in "$STATE_DIR/link/"*; do
-      [ -f "$old" ] && : >"$STATE_DIR/own-app/$(basename "$old")"
-    done
-    rm -rf "$STATE_DIR/link"
-  fi
+  # Own-app mode used to be an opt-in experiment; it is now on unless switched off.
+  rm -rf "$STATE_DIR/link" "$STATE_DIR/own-app"
   load_generated_launchers
   [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 0
   for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
@@ -1970,17 +1993,22 @@ migrate_launchers() {
   migrate_own_apps
 }
 
-# Own-app profiles from before the Dock watcher keep their launcher pinned; move the tile
-# to the copy and keep the watcher built from this version.
+# Gives every profile its own copy of Claude (unless switched off), keeps the watcher built
+# from this version, and points pinned Dock tiles at the copies.
 migrate_own_apps() {
-  local i dir
-  any_own_app || return 0
+  local i dir new=()
   for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
     dir=$(marker_value "${GENERATED_APPS[$i]}/$MARKER_FILE" "data-dir")
-    if [ -n "$dir" ] && [ -f "$(own_app_file "$dir")" ]; then
-      own_app_apply "${GENERATED_APPS[$i]}" || true
+    own_app_enabled "$dir" || continue
+    [ -d "$STATE_DIR/apps/$dir" ] || new+=("${GENERATED_LABELS[$i]}")
+    own_app_apply "${GENERATED_APPS[$i]}" || true
+  done
+  for ((i = 0; i < ${#new[@]}; i++)); do
+    if [ -d "$STATE_DIR/apps/$(marker_value "$APPS/Claude ${new[$i]}.app/$MARKER_FILE" "data-dir")" ]; then
+      echo "Claude ${new[$i]} now shows its own icon in the Dock and the app switcher."
     fi
   done
+  return 0
 }
 
 # Called by a launcher, in the background, when the installed claude-fix is newer.
@@ -2263,10 +2291,14 @@ remove_watcher() {
 
 any_own_app() {
   local f
-  for f in "$STATE_DIR/own-app/"*; do
-    [ -f "$f" ] && return 0
+  for f in "$STATE_DIR/apps/"*/*.app; do
+    [ -d "$f" ] && return 0
   done
   return 1
+}
+
+own_app_enabled() {
+  [ -n "$1" ] && [ ! -f "$(own_app_off_file "$1")" ]
 }
 
 # Points a profile's Dock tile, if it has one, at its copy while the watcher is running,
@@ -2333,7 +2365,7 @@ own_app_apply() {
   local app="$1" dir clone="" target
   dir=$(marker_value "$app/$MARKER_FILE" "data-dir")
   target="$app"
-  if [ -n "$dir" ] && [ -f "$(own_app_file "$dir")" ]; then
+  if own_app_enabled "$dir"; then
     clone=$(/bin/bash "$app/$LAUNCH_SCRIPT_REL" own-app-sync 2>/dev/null) || clone=""
     if [ -n "$clone" ] && install_watcher; then
       target="$clone"
@@ -2343,23 +2375,19 @@ own_app_apply() {
   [ "$target" != "$app" ]
 }
 
-own_app_file() {
-  printf '%s/own-app/%s' "$STATE_DIR" "$1"
+own_app_off_file() {
+  printf '%s/own-app-off/%s' "$STATE_DIR" "$1"
 }
 
-experiment_setup() {
+own_app_setup() {
   local sub="${1:-}" label app dir pid clone
-  case "$sub" in
-    link) sub="on" ;;
-    unlink) sub="off" ;;
-  esac
   case "$sub" in
     on | off | status) ;;
     *)
-      echo "Usage: $0 experiment on|off|status <profile>" >&2
+      echo "Usage: $0 own-app on|off|status <profile>" >&2
       echo "  on      run the profile from its own copy of Claude, so the Dock and the" >&2
-      echo "          app switcher show its icon" >&2
-      echo "  off     go back to running it from Claude.app" >&2
+      echo "          app switcher show its icon (the default)" >&2
+      echo "  off     run it from Claude.app, which shows Claude's icon while it runs" >&2
       exit 1
       ;;
   esac
@@ -2375,13 +2403,19 @@ experiment_setup() {
   [ -n "$dir" ] || dir=$(slug "$label")
 
   if [ "$sub" = "status" ]; then
-    if [ -f "$(own_app_file "$dir")" ]; then
+    clone=""
+    for clone in "$STATE_DIR/apps/$dir/"*.app; do
+      [ -d "$clone" ] && break
+      clone=""
+    done
+    if ! own_app_enabled "$dir"; then
+      echo "Claude $label: runs from Claude.app, switched off (sign-in in ~/$dir)"
+    elif [ -n "$clone" ]; then
       echo "Claude $label: own app (sign-in in ~/$dir)"
-      for clone in "$STATE_DIR/apps/$dir/"*.app; do
-        [ -d "$clone" ] && echo "  copy: $clone ($(plutil -extract CFBundleShortVersionString raw -o - "$clone/Contents/Info.plist" 2>/dev/null || echo "unknown version"))"
-      done
+      echo "  copy: $clone ($(plutil -extract CFBundleShortVersionString raw -o - "$clone/Contents/Info.plist" 2>/dev/null || echo "unknown version"))"
     else
-      echo "Claude $label: runs from Claude.app (sign-in in ~/$dir)"
+      echo "Claude $label: runs from Claude.app until its copy is made (sign-in in ~/$dir)"
+      echo "  A copy needs Claude.app and ~/.claude-fix on the same APFS disk."
     fi
     if [ -f "$(watch_agent_plist)" ]; then
       echo "  Dock watcher: installed"
@@ -2394,37 +2428,39 @@ experiment_setup() {
     return 0
   fi
 
-  if pid=$(profile_running_pid "$HOME/$dir"); then
-    echo "ERROR: Claude $label is running (pid $pid). Quit it first, then run this again." >&2
-    exit 1
-  fi
   ensure_claude_app || exit 1
-  mkdir -p "$STATE_DIR/own-app"
   if [ "$sub" = "off" ]; then
-    rm -f "$(own_app_file "$dir")"
+    if pid=$(profile_running_pid "$HOME/$dir"); then
+      echo "ERROR: Claude $label is running (pid $pid). Quit it first, then run this again." >&2
+      exit 1
+    fi
+    mkdir -p "$STATE_DIR/own-app-off"
+    : >"$(own_app_off_file "$dir")"
     own_app_apply "$app" || true
     rm -rf "$STATE_DIR/apps/$dir"
     any_own_app || remove_watcher
-    echo "Claude $label runs from Claude.app again."
+    echo "Claude $label runs from Claude.app, so it shows Claude's icon while it runs."
+    echo "Undo with: $0 own-app on \"$label\""
     return 0
   fi
-  : >"$(own_app_file "$dir")"
-  echo "Making Claude $label its own app..."
+  rm -f "$(own_app_off_file "$dir")"
   if ! clone=$(/bin/bash "$app/$LAUNCH_SCRIPT_REL" own-app-sync); then
-    rm -f "$(own_app_file "$dir")"
-    echo "ERROR: could not copy $CLAUDE_APP for Claude $label." >&2
+    echo "ERROR: could not make a copy of $CLAUDE_APP for Claude $label. A copy needs" >&2
+    echo "       Claude.app and your home folder on the same APFS disk." >&2
     exit 1
   fi
-  echo "Claude $label now runs from its own copy of Claude:"
+  echo "Claude $label runs from its own copy of Claude:"
   echo "  $clone"
   if own_app_apply "$app"; then
-    echo "The Dock and the app switcher show its icon. If it's pinned, its Dock tile now"
+    echo "The Dock and the app switcher show its icon. If it's pinned, its Dock tile"
     echo "opens the copy, and a watcher keeps that click in Claude $label."
   else
     echo "The Dock and the app switcher show its icon. A pinned launcher stays pinned, since"
     echo "the Dock watcher needs the Command Line Tools (run: xcode-select --install)."
   fi
-  echo "Undo with: $0 experiment off \"$label\""
+  if profile_running_pid "$HOME/$dir" >/dev/null; then
+    echo "It's running from Claude.app right now; quit and reopen it to switch."
+  fi
 }
 
 picker_is_current() {
@@ -2678,7 +2714,7 @@ rename_setup() {
     dock_remove_app_pins "$old_app" "$plist" >/dev/null
     pin_launchers_to_dock 0 "$new_app" >/dev/null || true
   fi
-  [ -f "$(own_app_file "$dir")" ] && { own_app_apply "$new_app" || true; }
+  own_app_enabled "$dir" && { own_app_apply "$new_app" || true; }
   echo "Renamed Claude $old to Claude $new. Its sign-in stays in ~/$dir."
 }
 
@@ -3131,6 +3167,8 @@ $dir
     echo "Updating Dock..."
     pin_launchers_to_dock "$DOCK_CLEANUP" "${CREATED_APPS[@]}"
   fi
+  load_generated_launchers
+  migrate_own_apps >/dev/null
 
   if [ "$LAUNCH_AFTER_CREATE" = "1" ]; then
     launch_created_profiles
@@ -3175,7 +3213,7 @@ clean_setup() {
     rm -rf "$app"
     remove_desktop_shortcut "$base"
     rm -rf "$STATE_DIR/apps/$dir"
-    rm -f "$(own_app_file "$dir")"
+    rm -f "$(own_app_off_file "$dir")"
 
     if [ "$purge" = "1" ]; then
       if [ -d "$data" ]; then
@@ -3200,6 +3238,7 @@ clean_setup() {
     fi
   done
   shopt -u nullglob
+  rmdir "$STATE_DIR/apps" "$STATE_DIR/own-app-off" 2>/dev/null || true
   any_own_app || remove_watcher
 
   if [ -f "$PICKER_APP/$MARKER_FILE" ]; then
@@ -3244,9 +3283,9 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
       shift
       rename_setup "$@"
       ;;
-    experiment)
+    own-app | experiment)
       shift
-      experiment_setup "$@"
+      own_app_setup "$@"
       ;;
     version|--version)
       echo "claude-fix $CLAUDE_FIX_VERSION"

@@ -392,32 +392,35 @@ keeps its sign-in folder, icon, Dock pin and Desktop shortcut:
 claude-fix rename Work "Acme Corp"
 ```
 
-### Experimental: one icon per profile in the Dock and app switcher
+### One icon per profile in the Dock and app switcher
 
-A launcher starts the profile in your normal Claude.app, so while it runs, the Dock and
-Cmd-Tab show Claude's own icon. To have a profile show its own icon instead:
-
-```bash
-claude-fix experiment on Work
-claude-fix experiment status Work
-claude-fix experiment off Work     # back to running from Claude.app
-```
-
-The profile then runs from its own copy of Claude.app in `~/.claude-fix/apps`. The copy
-is an unmodified APFS clone, so it takes almost no disk space and keeps Anthropic's
+Each profile runs from its own copy of Claude.app in `~/.claude-fix/apps`, so the Dock
+and Cmd-Tab show the profile's icon while it runs, instead of Claude's. The copy is an
+unmodified APFS clone, so it takes almost no disk space and keeps Anthropic's
 signature: sign-in, passkeys and the keychain work as usual. Its icon is set the way
-Finder's Get Info does it, which leaves the signed files alone. After Claude updates,
-the launcher refreshes the copy before opening the profile.
+Finder's Get Info does it, which leaves the signed files alone.
 
-If the profile is pinned, its Dock tile moves to the copy, so the Dock shows one tile for
-it instead of the launcher plus the running app. The Dock opens a pinned app without
+When Claude updates, each copy is refreshed the next time its profile opens. A copy is
+never replaced while its profile is running. If Claude.app and your home folder are on
+different disks, a copy would take full disk space, so that profile keeps running from
+Claude.app and shows Claude's icon while it runs.
+
+If the profile is pinned, its Dock tile points at the copy, so the Dock shows one tile
+for it instead of the launcher plus the running app. The Dock opens a pinned app without
 saying which profile to use, which would start the copy in your default Claude account.
 A small watcher (`~/.claude-fix/watcher`, run by launchd from
 `~/Library/LaunchAgents/com.github.sarhej.claude-fix.watch.plist`) catches that: it
 stops a copy that started without its profile and opens the profile through its launcher.
 macOS lists it under Login Items & Extensions as a background item. It is built with
-`swiftc`, so it needs the Command Line Tools; without them the launcher stays pinned. It
-is removed with the last own-app profile or by `clean`.
+`swiftc`, so it needs the Command Line Tools; without them the launcher stays pinned.
+
+To run a profile from Claude.app instead:
+
+```bash
+claude-fix own-app off Work
+claude-fix own-app on Work         # back to its own copy
+claude-fix own-app status Work
+```
 
 ### Updating
 
@@ -505,7 +508,7 @@ the simple built-in icons in `icons/`.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
-| `experiment on <label>` | Experimental: run the profile from its own copy of Claude, with its icon in the Dock and Cmd-Tab. `off` undoes it. |
+| `own-app off <label>` | Run the profile from Claude.app instead of its own copy, so it shows Claude's icon while it runs. `on` undoes it, `status` shows which. |
 | `rename <label> <new name>` | Rename a launcher; sign-in, icon, Dock pin and Desktop shortcut stay. |
 | `icon <label> <choice>...` | Set a symbol, a color, an image, `claude`, or `default`. |
 | `upgrade` | Rebuild all launchers, add Claude Profiles, quit duplicate Claude windows. |
@@ -721,7 +724,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (104 tests). Run it directly.
+The suite takes about **30–60 seconds** on macOS (105 tests). Run it directly.
 Piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
