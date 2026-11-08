@@ -518,17 +518,27 @@ func renderAppIcon(app: String, color: RGB, badge: Badge, output: URL, assetsCar
         fill = (fill.r + p.r, fill.g + p.g, fill.b + p.b, fill.n + 1)
     }
     let background = fill.n > 0 ? RGB(r: fill.r / fill.n, g: fill.g / fill.n, b: fill.b / fill.n) : color
-    for i in 0..<px.count {
-        let p = px.get(i)
-        px.set(i, p.r, p.g, p.b, p.a * weights[i])
+    // Mask a fresh copy: the master may already be cached as an image from drawing the .icns.
+    let masked = canvas(size) { dim in
+        image.draw(in: NSRect(x: 0, y: 0, width: dim, height: dim), from: .zero, operation: .copy, fraction: 1)
+    }
+    let maskedPx = Pixels(masked)
+    for i in 0..<maskedPx.count {
+        let p = maskedPx.get(i)
+        maskedPx.set(i, p.r, p.g, p.b, p.a * weights[i])
     }
     let layer = NSImage(size: NSSize(width: size, height: size))
-    layer.addRepresentation(master)
+    layer.addRepresentation(masked)
+    // Crop to a square around the visible icon, so a shadow or odd shape doesn't shift it.
+    let side = max(bounds.width, bounds.height)
+    let crop = NSRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
     let foreground = canvas(size) { dim in
-        let k = dim / bounds.width
-        layer.draw(in: NSRect(x: -bounds.minX * k, y: -bounds.minY * k, width: CGFloat(size) * k, height: CGFloat(size) * k),
+        let k = dim / side
+        layer.draw(in: NSRect(x: -crop.minX * k, y: -crop.minY * k, width: CGFloat(size) * k, height: CGFloat(size) * k),
                    from: .zero, operation: .sourceOver, fraction: 1)
-        drawBadge(badge, color: color, in: NSRect(x: 0, y: 0, width: dim, height: dim), canvasSize: dim)
+        // Keep the badge inside the rounded mask macOS applies to layered icons.
+        drawBadge(badge, color: color, in: NSRect(x: 0, y: 0, width: dim, height: dim).insetBy(dx: dim * 0.09, dy: dim * 0.09),
+                  canvasSize: dim)
     }
     if !buildAssetsCar(foreground: foreground, fill: background, output: assetsCar) {
         fputs("generate_icons: skipped the layered icon (needs Xcode 26's actool)\n", stderr)

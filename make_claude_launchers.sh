@@ -263,6 +263,7 @@ icon_tool_args() {
   fi
   case "$symbol" in
     none) args="--no-badge" ;;
+    "letter:?") args="--no-badge" ;;
     letter:*) args="--letter ${symbol#letter:}" ;;
     *) args="--symbol $symbol" ;;
   esac
@@ -2001,6 +2002,7 @@ icon_setup() {
         ;;
       \#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
         color="$lower"
+        rm -f "$custom"
         ;;
       *)
         if word_in "$lower" "$SYMBOL_NAMES"; then
@@ -2008,6 +2010,7 @@ icon_setup() {
           rm -f "$custom"
         elif word_in "$lower" "$COLOR_NAMES"; then
           color="$lower"
+          rm -f "$custom"
         elif [ "${#arg}" -eq 1 ] && printf '%s' "$arg" | LC_ALL=C grep -q '^[[:alnum:]]$'; then
           symbol="letter:$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]')"
           rm -f "$custom"
@@ -2042,6 +2045,14 @@ icon_setup() {
   if dock_app_pinned_quiet "$app"; then
     dock_restart
   fi
+}
+
+dock_app_pinned_quiet() {
+  local plist
+  dock_changes_disabled && return 1
+  dev_tool_ready python3 || return 1
+  plist=$(dock_plist_path)
+  [ -f "$plist" ] && dock_app_is_pinned "$1" "$plist" >/dev/null 2>&1
 }
 
 change_icon_interactively() {

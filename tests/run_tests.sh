@@ -1477,7 +1477,7 @@ test_icon_choices_symbol_color_letter() {
   install_fake_icon_tool
   capture_script create ClientA >/dev/null
   local icon="$HOME/Applications/Claude ClientA.app/Contents/Resources/applet.icns"
-  local conf="$HOME/.claude-fix/custom-icons/ClaudeClientA.conf"
+  local conf="$HOME/.claude-fix/custom-icons/ClaudeClienta.conf"
   capture_script icon ClientA home teal >/dev/null
   assert_eq "icon --symbol home --color teal" "$(cat "$icon")" "symbol and color"
   capture_script icon ClientA x >/dev/null
@@ -1488,6 +1488,16 @@ test_icon_choices_symbol_color_letter() {
   assert_eq "icon --no-badge --color #3366ff" "$(cat "$icon")" "no badge"
   capture_script icon ClientA Moon >/dev/null
   assert_eq "icon --symbol moon --color #3366ff" "$(cat "$icon")" "names are case-insensitive"
+  local png="$SANDBOX/pic.png"
+  sips -s format png "$REPO_ROOT/icons/heart.icns" --out "$png" >/dev/null 2>&1
+  capture_script icon ClientA "$png" >/dev/null
+  assert_file_exists "$HOME/.claude-fix/custom-icons/ClaudeClienta.icns" "image chosen"
+  capture_script icon ClientA sky >/dev/null
+  assert_file_missing "$HOME/.claude-fix/custom-icons/ClaudeClienta.icns" "a color replaces the image"
+  assert_eq "icon --symbol moon --color sky" "$(cat "$icon")" "color applies after an image"
+  assert_eq "--no-badge --color pink" \
+    "$(bash -c 'source "$1"; mkdir -p "$HOME/.claude-fix/custom-icons"; printf "symbol=letter:?\ncolor=pink\n" >"$(icon_choice_file X)"; icon_tool_args X' _ "$SCRIPT")" \
+    "no ? glob in tool arguments"
   capture_script icon ClientA default >/dev/null
   assert_file_missing "$conf" "default clears the choice"
   assert_eq "icon --letter C --color pink" "$(cat "$icon")" "back to the default"
