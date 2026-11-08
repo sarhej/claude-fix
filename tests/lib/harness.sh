@@ -276,7 +276,7 @@ create_generated_launcher() {
   touch "$app/Contents/Resources/applet.icns"
   printf '#!/bin/bash\nexit 0\n' >"$app/Contents/Resources/claude-fix.sh"
   chmod +x "$app/Contents/Resources/claude-fix.sh"
-  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=9\n' "$label" >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=10\n' "$label" >"$app/$MARKER_REL"
   create_generated_picker
 }
 
@@ -285,7 +285,7 @@ create_generated_picker() {
   local app="$HOME/Applications/Claude Profiles.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   touch "$app/Contents/MacOS/applet"
-  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=9\n' >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=10\n' >"$app/$MARKER_REL"
 }
 
 # Old v1-style launcher (always open -n; no focus helper) for upgrade tests.

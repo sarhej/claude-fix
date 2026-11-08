@@ -424,7 +424,7 @@ test_launcher_applescript_payload() {
   assert_contains "$decompiled" "launch" "AppleScript asks the helper to launch"
   assert_contains "$(cat "$app/Contents/Resources/focus.js")" "rapp" "focus sends a reopen event"
   marker="$(cat "$app/Contents/Resources/claude-fix-generated")"
-  assert_contains "$marker" "launcher-version=9" "marker records launcher version"
+  assert_contains "$marker" "launcher-version=10" "marker records launcher version"
   assert_contains "$marker" "data-dir=ClaudeWork" "marker records data dir"
   assert_contains "$marker" "claude-app=$CLAUDE_LAUNCHERS_CLAUDE_APP" "marker records Claude path"
   assert_contains "$marker" "kind=launcher" "marker records kind"
@@ -1134,7 +1134,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "Work has runtime helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=9" "Work marker upgraded"
+    "launcher-version=10" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix.sh" "Personal has runtime helper"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "upgrade adds the picker"
   teardown_sandbox
@@ -1157,7 +1157,7 @@ test_outdated_launchers_prompt_upgrade() {
   assert_contains "$out" "Updating 2 launcher(s) from an older version" "migrates without asking"
   assert_contains "$out" "Claude Profile Switcher is already set up" "then shows the menu"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=9" "Work is current"
+    "launcher-version=10" "Work is current"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "picker added"
   assert_file_exists "$HOME/ClaudeWork/Cookies" "sign-in kept"
   assert_true "old Desktop copy became a shortcut" test -L "$HOME/Desktop/Claude Work.app"
@@ -1707,22 +1707,23 @@ test_launcher_upgrades_itself_after_update() {
   local picker="$HOME/Applications/Claude Profiles.app/Contents/Resources"
   assert_contains "$(cat "$marker")" "claude-fix-path=$SCRIPT" "launcher records the claude-fix command"
   assert_contains "$(cat "$picker/claude-fix-generated")" "claude-fix-path=$SCRIPT" "picker records it too"
-  assert_eq "9" "$(capture_script launcher-version)" "launcher-version command"
+  assert_eq "10" "$(capture_script launcher-version)" "launcher-version command"
   local newer="$SANDBOX/newer-claude-fix"
-  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 10 ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
+  printf '#!/bin/bash\ncase "$1" in --launcher-version) echo 11 ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
     "$SANDBOX/upgrades.log" >"$newer"
   chmod +x "$newer"
   : >"$SANDBOX/upgrades.log"
   sed -i.bak "s|^claude-fix-path=.*|claude-fix-path=$newer|" "$picker/claude-fix-generated" && rm -f "$picker/claude-fix-generated.bak"
   bash "$picker/claude-fix.sh" background
   assert_eq "upgrade upgrade --background" "$(cat "$SANDBOX/upgrades.log")" "newer claude-fix upgrades in the background"
-  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 7 ;; upgrade) echo upgrade >>"%s" ;; esac\n' \
+  # claude-fix before 1.3.0: stops at an unknown flag, but makes a profile from any word.
+  printf '#!/bin/bash\ncase "$1" in --*) exit 1 ;; *) echo "created $*" >>"%s" ;; esac\n' \
     "$SANDBOX/upgrades.log" >"$newer"
   : >"$SANDBOX/upgrades.log"
   printf 'new-claude-icon\n' >"$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns"
   : >"$FAKE_ICON_LOG"
   bash "$picker/claude-fix.sh" background
-  assert_eq "" "$(cat "$SANDBOX/upgrades.log")" "same version leaves launchers alone"
+  assert_eq "" "$(cat "$SANDBOX/upgrades.log")" "an old claude-fix is asked with a flag only, so nothing is created"
   assert_eq "--symbol work" "$(cat "$FAKE_ICON_LOG")" "and refreshes launcher icons"
   teardown_sandbox
 }
@@ -1738,7 +1739,7 @@ test_background_upgrade_is_quiet_and_locked() {
   rmdir "$HOME/.claude-fix/upgrade.lock"
   capture_script upgrade --background >/dev/null
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=9" "migrated"
+    "launcher-version=10" "migrated"
   assert_file_missing "$HOME/.claude-fix/upgrade.lock" "lock released"
   teardown_sandbox
 }
@@ -1910,6 +1911,35 @@ test_watcher_source_is_bundled() {
   assert_contains "$src" "claude-fix.sh" "reopens through the launcher"
 }
 
+test_command_named_launchers_removed() {
+  test_start "launchers an old claude-fix made from command names are removed, others kept"
+  setup_sandbox
+  create_mock_claude_bundle
+  create_outdated_launcher "launcher-version"
+  create_outdated_launcher "version"
+  create_outdated_launcher "Work"
+  printf 'data-dir=ClaudeLauncherVersion\n' >>"$HOME/Applications/Claude launcher-version.app/Contents/Resources/claude-fix-generated"
+  mkdir -p "$HOME/ClaudeLauncherVersion" "$HOME/ClaudeVersion"
+  : >"$HOME/ClaudeVersion/kept"
+  local out
+  out="$(capture_script create Work)"
+  assert_contains "$out" "Removing Claude launcher-version" "says what it removed"
+  assert_file_missing "$HOME/Applications/Claude launcher-version.app" "launcher-version launcher removed"
+  assert_file_missing "$HOME/Applications/Claude version.app" "version launcher removed"
+  assert_file_missing "$HOME/ClaudeLauncherVersion" "its empty folder removed"
+  assert_file_exists "$HOME/ClaudeVersion/kept" "a folder with data is kept"
+  assert_file_exists "$HOME/Applications/Claude Work.app" "real profiles kept"
+  local code
+  set +e
+  out="$(capture_script create version 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "a command name can't be a profile"
+  assert_contains "$out" "is a claude-fix command" "explains why"
+  assert_eq "10" "$(capture_script --launcher-version)" "--launcher-version works as a flag"
+  teardown_sandbox
+}
+
 test_link_experiment_migrates_to_own_app() {
   test_start "profiles from the earlier experiments get their own copy like every profile"
   setup_sandbox
@@ -2047,6 +2077,7 @@ main() {
   test_own_app_rename_off_clean
   test_own_app_needs_a_clone
   test_link_experiment_migrates_to_own_app
+  test_command_named_launchers_removed
   test_own_app_dock_tile
   test_own_app_without_watcher_keeps_launcher
   test_watcher_source_is_bundled
