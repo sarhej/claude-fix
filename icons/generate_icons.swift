@@ -6,7 +6,60 @@ enum IconKind {
     case briefcase
     case person
     case letter(String)
+    case glyph(Glyph)
     case plain
+}
+
+// Built-in icons from glyphs.json. Coordinates are fractions of the icon size,
+// origin bottom-left; the parts of one shape fill even-odd.
+struct GlyphFile: Decodable {
+    let icons: [Glyph]
+}
+
+struct Glyph: Decodable {
+    let name: String
+    let color: [Double]
+    let shapes: [GlyphShape]
+}
+
+struct GlyphShape: Decodable {
+    let fill: Bool?
+    let stroke: Double?
+    let alpha: Double?
+    let background: Bool?
+    let parts: [GlyphPart]
+}
+
+struct GlyphPart: Decodable {
+    let d: [[PathValue]]?
+    let circle: [Double]?
+    let ellipse: [Double]?
+    let rrect: [Double]?
+    let star: [Double]?
+}
+
+enum PathValue: Decodable {
+    case op(String)
+    case number(Double)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else {
+            self = .op(try container.decode(String.self))
+        }
+    }
+
+    var number: CGFloat {
+        if case .number(let value) = self { return CGFloat(value) }
+        return 0
+    }
+
+    var op: String {
+        if case .op(let value) = self { return value }
+        return ""
+    }
 }
 
 struct ProfileIcon {
@@ -155,6 +208,59 @@ func drawLetter(_ letter: String, in rect: NSRect, dim: CGFloat) {
     text.draw(at: point, withAttributes: attrs)
 }
 
+func glyphPath(_ parts: [GlyphPart], dim: CGFloat) -> NSBezierPath {
+    let path = NSBezierPath()
+    func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x * dim, y: y * dim) }
+    for part in parts {
+        if let c = part.circle?.map({ CGFloat($0) }) {
+            path.appendOval(in: NSRect(x: (c[0] - c[2]) * dim, y: (c[1] - c[2]) * dim, width: c[2] * 2 * dim, height: c[2] * 2 * dim))
+        } else if let e = part.ellipse?.map({ CGFloat($0) }) {
+            path.appendOval(in: NSRect(x: (e[0] - e[2]) * dim, y: (e[1] - e[3]) * dim, width: e[2] * 2 * dim, height: e[3] * 2 * dim))
+        } else if let r = part.rrect?.map({ CGFloat($0) }) {
+            path.appendRoundedRect(NSRect(x: r[0] * dim, y: r[1] * dim, width: r[2] * dim, height: r[3] * dim), xRadius: r[4] * dim, yRadius: r[4] * dim)
+        } else if let s = part.star?.map({ CGFloat($0) }) {
+            let points = Int(s[4])
+            for i in 0..<(points * 2) {
+                let angle = CGFloat.pi / 2 + CGFloat(i) * CGFloat.pi / CGFloat(points)
+                let radius = i % 2 == 0 ? s[2] : s[3]
+                let p = point(s[0] + radius * cos(angle), s[1] + radius * sin(angle))
+                if i == 0 { path.move(to: p) } else { path.line(to: p) }
+            }
+            path.close()
+        } else if let ops = part.d {
+            for op in ops {
+                let n = op.dropFirst().map { $0.number }
+                switch op.first?.op ?? "" {
+                case "M": path.move(to: point(n[0], n[1]))
+                case "L": path.line(to: point(n[0], n[1]))
+                case "C": path.curve(to: point(n[4], n[5]), controlPoint1: point(n[0], n[1]), controlPoint2: point(n[2], n[3]))
+                case "Z": path.close()
+                default: break
+                }
+            }
+        }
+    }
+    return path
+}
+
+func drawGlyph(_ glyph: Glyph, spec: ProfileIcon, dim: CGFloat) {
+    for shape in glyph.shapes {
+        let path = glyphPath(shape.parts, dim: dim)
+        let color = shape.background == true ? spec.fillColor : NSColor(white: 1.0, alpha: CGFloat(shape.alpha ?? 1.0))
+        if let width = shape.stroke {
+            path.lineWidth = max(1.0, CGFloat(width) * dim)
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            color.setStroke()
+            path.stroke()
+        } else {
+            path.windingRule = .evenOdd
+            color.setFill()
+            path.fill()
+        }
+    }
+}
+
 func drawIcon(_ spec: ProfileIcon, size: Int) -> NSImage {
     let dim = CGFloat(size)
     let image = NSImage(size: NSSize(width: dim, height: dim))
@@ -176,6 +282,8 @@ func drawIcon(_ spec: ProfileIcon, size: Int) -> NSImage {
         drawPerson(in: rect, dim: dim)
     case .letter(let letter):
         drawLetter(letter, in: rect, dim: dim)
+    case .glyph(let glyph):
+        drawGlyph(glyph, spec: spec, dim: dim)
     case .plain:
         break
     }
@@ -270,7 +378,24 @@ if let idx = singleIndex, let letter = singleLetter, let output = singleOutput {
 let iconsDir = repoIconsDir()
 let fileManager = FileManager.default
 
-for spec in palette {
+var allIcons = palette
+do {
+    let data = try Data(contentsOf: iconsDir.appendingPathComponent("glyphs.json"))
+    for glyph in try JSONDecoder().decode(GlyphFile.self, from: data).icons {
+        allIcons.append(ProfileIcon(
+            name: glyph.name,
+            kind: .glyph(glyph),
+            red: CGFloat(glyph.color[0]),
+            green: CGFloat(glyph.color[1]),
+            blue: CGFloat(glyph.color[2])
+        ))
+    }
+} catch {
+    fputs("glyphs.json: \(error.localizedDescription)\n", stderr)
+    exit(1)
+}
+
+for spec in allIcons {
     let icnsPath = iconsDir.appendingPathComponent("\(spec.name).icns")
     do {
         try buildIcns(spec: spec, outputPath: icnsPath, workDir: iconsDir)

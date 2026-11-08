@@ -400,26 +400,33 @@ test_create_custom_and_implicit_labels() {
 }
 
 test_launcher_applescript_payload() {
-  test_start "launcher embeds isolated --user-data-dir path"
+  test_start "launcher runs the bundled helper with its own profile settings"
   setup_sandbox
   create_mock_claude >/dev/null
   capture_script create Work >/dev/null
-  local script_path="$HOME/Applications/Claude Work.app/Contents/Resources/Scripts/main.scpt"
-  local launch_sh="$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh"
+  local app="$HOME/Applications/Claude Work.app"
+  local script_path="$app/Contents/Resources/Scripts/main.scpt"
+  local helper="$app/Contents/Resources/claude-fix.sh"
   assert_file_exists "$script_path" "compiled AppleScript exists"
-  assert_file_exists "$launch_sh" "launch-profile.sh exists"
-  local decompiled launch_body
+  assert_file_exists "$helper" "runtime helper exists"
+  assert_file_exists "$app/Contents/Resources/focus.js" "focus script exists"
+  assert_file_exists "$app/Contents/Resources/claim.js" "claim script exists"
+  assert_true "runtime helper is valid bash" bash -n "$helper"
+  local decompiled marker plist
   decompiled="$(osadecompile "$script_path" 2>/dev/null || true)"
-  assert_contains "$decompiled" "launch-profile.sh" "AppleScript runs launch helper"
-  launch_body="$(cat "$launch_sh")"
-  assert_contains "$launch_body" "--user-data-dir" "passes user-data-dir flag"
-  assert_contains "$launch_body" "$HOME/ClaudeWork" "uses absolute profile dir"
-  assert_contains "$launch_body" "open -n" "opens new instance when not running"
-  assert_contains "$launch_body" "frontmost" "focuses existing profile process"
-  assert_contains "$launch_body" "Claude.app/Contents/MacOS/Claude" "matches only Claude binary"
-  assert_not_contains "$launch_body" "exit }" "awk must not early-exit (SIGPIPE 141)"
-  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=4" "marker records launcher version"
+  assert_contains "$decompiled" "claude-fix.sh" "AppleScript runs the helper"
+  assert_contains "$decompiled" "launch" "AppleScript asks the helper to launch"
+  assert_contains "$(cat "$app/Contents/Resources/focus.js")" "rapp" "focus sends a reopen event"
+  marker="$(cat "$app/Contents/Resources/claude-fix-generated")"
+  assert_contains "$marker" "launcher-version=5" "marker records launcher version"
+  assert_contains "$marker" "data-dir=ClaudeWork" "marker records data dir"
+  assert_contains "$marker" "claude-app=$CLAUDE_LAUNCHERS_CLAUDE_APP" "marker records Claude path"
+  assert_contains "$marker" "kind=launcher" "marker records kind"
+  plist="$app/Contents/Info.plist"
+  assert_eq "com.github.sarhej.claude-fix.launcher.claudework" \
+    "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "launcher has its own bundle ID"
+  assert_false "CFBundleIconName removed so applet.icns is used" \
+    plutil -extract CFBundleIconName raw -o - "$plist"
   teardown_sandbox
 }
 
@@ -670,21 +677,21 @@ test_label_validation() {
 }
 
 test_quoted_claude_paths() {
-  test_start "create escapes Claude.app paths with quotes, dollars, backticks and backslashes"
+  test_start "launchers handle Claude.app paths with quotes, dollars, backticks and backslashes"
   setup_sandbox
-  create_mock_claude "$HOME/Applications/Sergej's \"Quote\" \$Apps \`tick\` Back\\Slash/Claude.app" >/dev/null
+  local odd="$HOME/Applications/Sergej's \"Quote\" \$Apps \`tick\` Back\\Slash/Claude.app"
+  create_mock_claude "$odd" >/dev/null
   capture_script create Work >/dev/null
-  local launch_sh="$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh"
-  assert_file_exists "$launch_sh" "launch helper exists"
-  local body
-  body="$(cat "$launch_sh")"
-  assert_contains "$body" "Sergej'\\''s" "single quote was shell-escaped"
-  assert_contains "$body" "Quote" "double-quoted path segment survived"
-  local dollar_apps_literal="\$Apps"
-  local backticks_literal="\`tick\`"
-  assert_contains "$body" "$dollar_apps_literal" "dollar sign was not expanded"
-  assert_contains "$body" "$backticks_literal" "backticks were not evaluated"
-  assert_contains "$body" "Back\\Slash" "backslash survived escaping"
+  local app="$HOME/Applications/Claude Work.app"
+  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "claude-app=$odd" \
+    "marker stores the path verbatim"
+  install_helper_fakes "  55 $odd/Contents/MacOS/Claude --user-data-dir=$HOME/ClaudeWork"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$app/Contents/Resources/claude-fix.sh" launch
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 55" "helper finds Claude at that path"
+  : >"$SANDBOX/ps.txt"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$app/Contents/Resources/claude-fix.sh" launch
+  assert_eq "-n -a $odd --args --user-data-dir=$HOME/ClaudeWork" "$(cat "$SANDBOX/open.log")" \
+    "helper launches Claude from that path"
   teardown_sandbox
 }
 
@@ -882,7 +889,7 @@ test_icons_download_to_cache() {
   setup_sandbox
   create_mock_claude >/dev/null
   mkdir -p "$SANDBOX/icon-src"
-  cp "$REPO_ROOT/icons/profile-"*.icns "$SANDBOX/icon-src/"
+  cp "$REPO_ROOT/icons/"*.icns "$SANDBOX/icon-src/"
   cp "$REPO_ROOT/icons/generate_icons.swift" "$SANDBOX/icon-src/"
   # Simulate curl | bash: run a copy of the script with no sibling icons/ folder.
   cp "$SCRIPT" "$SANDBOX/make_claude_launchers.sh"
@@ -899,6 +906,7 @@ test_icons_download_to_cache() {
   assert_contains "$out" "profile icons ready" "icons download succeeded"
   assert_file_exists "$SANDBOX/icon-cache/profile-0.icns" "cached profile-0"
   assert_file_exists "$SANDBOX/icon-cache/generate_icons.swift" "cached swift generator"
+  assert_file_exists "$SANDBOX/icon-cache/chat.icns" "cached built-in icons"
   work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
   palette_hash="$(shasum -a 256 "$SANDBOX/icon-cache/profile-0.icns" | awk '{print $1}')"
   assert_eq "$palette_hash" "$work_hash" "Work launcher uses downloaded icon"
@@ -1091,7 +1099,7 @@ test_management_menu_cancel() {
   test_start "management menu option 9 cancels without changes"
   setup_sandbox
   create_generated_launcher "Personal"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
   local out
   out="$(capture_script create)"
   assert_contains "$out" "Cancelled. Nothing changed." "cancel message"
@@ -1108,11 +1116,11 @@ test_upgrade_rebuilds_outdated_launchers() {
   local out
   out="$(capture_script upgrade --no-quit-duplicates)"
   assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
-  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "Work has launch helper"
-  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" "frontmost" "Work focuses existing"
+  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "Work has runtime helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=4" "Work marker upgraded"
-  assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh" "Personal has launch helper"
+    "launcher-version=5" "Work marker upgraded"
+  assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix.sh" "Personal has runtime helper"
+  assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "upgrade adds the picker"
   teardown_sandbox
 }
 
@@ -1122,12 +1130,12 @@ test_outdated_launchers_prompt_upgrade() {
   create_mock_claude >/dev/null
   create_outdated_launcher "Work"
   export CLAUDE_LAUNCHERS_UPGRADE_ANSWER=y
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=9
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
   local out
   out="$(capture_script create)"
   assert_contains "$out" "launchers are outdated" "warns about outdated"
   assert_contains "$out" "Upgrading 1 launcher(s)" "auto-upgrades when accepted"
-  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "helper installed"
+  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "helper installed"
   teardown_sandbox
 }
 
@@ -1163,7 +1171,7 @@ test_management_menu_clean_keep_data() {
   local data="$HOME/ClaudeWork"
   mkdir -p "$data"
   echo "keep" >"$data/history.db"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=6
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=7
   local out
   out="$(capture_script create)"
   assert_contains "$out" "Removing launcher: Claude Work.app" "removes launcher"
@@ -1179,7 +1187,7 @@ test_management_menu_clean_purge() {
   local data="$HOME/ClaudeWork"
   mkdir -p "$data"
   echo "secret" >"$data/secret.txt"
-  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=7
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=8
   export CLAUDE_LAUNCHERS_PURGE_ANSWER=y
   local out
   out="$(capture_script create)"
@@ -1210,6 +1218,223 @@ FAKE
   set -e
   assert_eq "1" "$code" "non-macOS exits 1"
   assert_contains "$out" "only works on macOS" "clear platform error"
+  teardown_sandbox
+}
+
+# Fake ps/osascript/open on PATH so the runtime helper can be driven without real Claude processes.
+install_helper_fakes() {
+  local ps_lines="$1"
+  mkdir -p "$SANDBOX/fakebin"
+  printf '%s\n' "$ps_lines" >"$SANDBOX/ps.txt"
+  printf '#!/bin/bash\ncat "%s"\n' "$SANDBOX/ps.txt" >"$SANDBOX/fakebin/ps"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s"\n' "$SANDBOX/osascript.log" >"$SANDBOX/fakebin/osascript"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >>"%s"\n' "$SANDBOX/open.log" >"$SANDBOX/fakebin/open"
+  chmod +x "$SANDBOX/fakebin/"*
+  : >"$SANDBOX/osascript.log"
+  : >"$SANDBOX/open.log"
+}
+
+run_helper() {
+  PATH="$SANDBOX/fakebin:$PATH" bash "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "$@"
+}
+
+test_picker_created_with_launchers() {
+  test_start "create builds Claude Profiles.app to handle claude:// links"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local out picker plist
+  out="$(capture_script create Work Personal)"
+  picker="$HOME/Applications/Claude Profiles.app"
+  plist="$picker/Contents/Info.plist"
+  assert_contains "$out" "built Claude Profiles" "reports picker"
+  assert_file_exists "$picker/Contents/Resources/claude-fix.sh" "picker has runtime helper"
+  assert_contains "$(cat "$picker/Contents/Resources/claude-fix-generated")" "kind=picker" "picker marker"
+  assert_eq "com.github.sarhej.claude-fix.profiles" \
+    "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "picker bundle ID"
+  assert_contains "$(plutil -extract CFBundleURLTypes xml1 -o - "$plist")" "<string>claude</string>" \
+    "picker declares the claude scheme"
+  assert_contains "$(osadecompile "$picker/Contents/Resources/Scripts/main.scpt")" "open location" \
+    "picker handles open location"
+  local listed
+  listed="$(run_helper list)"
+  assert_eq "$(printf 'Claude\nClaude Personal\nClaude Work')" "$listed" "picker lists normal Claude + profiles"
+  teardown_sandbox
+}
+
+test_picker_not_treated_as_profile() {
+  test_start "the picker is never listed, upgraded or purged as a profile"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  mkdir -p "$HOME/ClaudeProfiles"
+  echo keep >"$HOME/ClaudeProfiles/data"
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=10
+  local out
+  out="$(capture_script create)"
+  assert_not_contains "$out" "Claude Profiles" "management menu does not list the picker"
+  export CLAUDE_LAUNCHERS_PURGE_ANSWER=y
+  out="$(capture_script clean --purge)"
+  assert_contains "$out" "Removing Claude Profiles.app" "clean removes the picker"
+  assert_file_missing "$HOME/Applications/Claude Profiles.app" "picker removed"
+  assert_file_exists "$HOME/ClaudeProfiles/data" "purge never touches ~/ClaudeProfiles"
+  teardown_sandbox
+}
+
+test_helper_routes_to_running_profile() {
+  test_start "helper sends reopen or the link to the right running Claude"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local bin="$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/MacOS/Claude"
+  install_helper_fakes "$(printf '%s\n' \
+    "  101 $bin" \
+    "  202 $bin --user-data-dir=$HOME/ClaudeWork --some-flag" \
+    "  303 $CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --user-data-dir=$HOME/ClaudeWork" \
+    "  404 /bin/bash something --user-data-dir=$HOME/ClaudeWork")"
+  run_helper open "Claude Work" "claude://claude.ai/login?code=abc"
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 202 claude://claude.ai/login?code=abc" \
+    "link goes to the Work process, not helpers or look-alikes"
+  : >"$SANDBOX/osascript.log"
+  run_helper open "Claude"
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 101" "normal Claude is the process without a data dir"
+  assert_eq "" "$(cat "$SANDBOX/open.log")" "nothing new is launched"
+  assert_eq "Claude" "$(run_helper last)" "remembers the last profile"
+  teardown_sandbox
+}
+
+test_helper_launches_missing_profile_with_link() {
+  test_start "helper launches a profile that isn't running and hands it the link"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create "Big Client" >/dev/null
+  install_helper_fakes "  101 $CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/MacOS/Claude"
+  run_helper open "Claude Big Client" "claude://claude.ai/login"
+  assert_eq "-n -a $CLAUDE_LAUNCHERS_CLAUDE_APP claude://claude.ai/login --args --user-data-dir=$HOME/ClaudeBigClient" \
+    "$(cat "$SANDBOX/open.log")" "opens a new instance with the link and data dir"
+  assert_eq "" "$(cat "$SANDBOX/osascript.log")" "no Apple event when launching"
+  local code
+  set +e
+  run_helper open "Claude Nope" >/dev/null 2>&1
+  code=$?
+  set -e
+  assert_ne "0" "$code" "unknown profile fails"
+  teardown_sandbox
+}
+
+test_helper_matches_paths_with_spaces() {
+  test_start "helper matches a data dir whose path has spaces"
+  setup_sandbox
+  local spaced="$SANDBOX/with space/home"
+  mkdir -p "$spaced/Applications"
+  export HOME="$spaced"
+  create_mock_claude "$HOME/Applications/Claude.app" >/dev/null
+  capture_script create Work >/dev/null
+  install_helper_fakes "  77 $CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/MacOS/Claude --user-data-dir=$HOME/ClaudeWork"
+  run_helper open "Claude Work"
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 77" "finds the process"
+  teardown_sandbox
+}
+
+test_icon_command_sets_custom_image() {
+  test_start "icon command applies an image and keeps it across rebuilds"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local png="$SANDBOX/my icon.png" app="$HOME/Applications/Claude Work.app" out
+  sips -s format png "$REPO_ROOT/icons/heart.icns" --out "$png" >/dev/null 2>&1
+  out="$(capture_script icon Work "$png")"
+  assert_contains "$out" "Updated the icon for Claude Work" "reports update"
+  local custom="$HOME/.claude-fix/custom-icons/ClaudeWork.icns"
+  assert_file_exists "$custom" "custom icon stored"
+  assert_eq "$(shasum -a 256 "$custom" | awk '{print $1}')" \
+    "$(shasum -a 256 "$app/Contents/Resources/applet.icns" | awk '{print $1}')" "launcher uses the custom icon"
+  capture_script upgrade --no-quit-duplicates >/dev/null
+  assert_eq "$(shasum -a 256 "$custom" | awk '{print $1}')" \
+    "$(shasum -a 256 "$app/Contents/Resources/applet.icns" | awk '{print $1}')" "custom icon survives upgrade"
+  capture_script icon Work default >/dev/null
+  assert_file_missing "$custom" "default removes the custom icon"
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/profile-0.icns" | awk '{print $1}')" \
+    "$(shasum -a 256 "$app/Contents/Resources/applet.icns" | awk '{print $1}')" "default restores the built-in icon"
+  teardown_sandbox
+}
+
+test_icon_command_builtin_and_claude() {
+  test_start "icon command accepts built-in names and claude"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Personal >/dev/null
+  local app="$HOME/Applications/Claude Personal.app" name
+  for name in home code star heart book globe bolt leaf moon chat; do
+    assert_file_exists "$REPO_ROOT/icons/$name.icns" "built-in $name icon ships"
+  done
+  capture_script icon Personal Moon >/dev/null
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/moon.icns" | awk '{print $1}')" \
+    "$(shasum -a 256 "$app/Contents/Resources/applet.icns" | awk '{print $1}')" "built-in names are case-insensitive"
+  capture_script icon Personal claude >/dev/null
+  assert_eq "$(shasum -a 256 "$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns" | awk '{print $1}')" \
+    "$(shasum -a 256 "$app/Contents/Resources/applet.icns" | awk '{print $1}')" "claude uses Claude's own icon"
+  local out code
+  set +e
+  out="$(capture_script icon Personal sparkle 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "unknown icon name fails"
+  assert_contains "$out" "home code star" "lists the built-in names"
+  set +e
+  out="$(capture_script icon Nobody home 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "unknown profile fails"
+  set +e
+  out="$(capture_script icon Personal "$SANDBOX/missing.png" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "missing image fails"
+  assert_contains "$out" "image not found" "explains missing image"
+  teardown_sandbox
+}
+
+test_management_menu_change_icon() {
+  test_start "management menu option 6 changes a profile's icon"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  export CLAUDE_LAUNCHERS_MANAGEMENT_CHOICE=6
+  export CLAUDE_LAUNCHERS_ICON_ANSWER="globe"
+  local out
+  out="$(capture_script create)"
+  assert_contains "$out" "Updated the icon for Claude Work" "icon changed from the menu"
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/globe.icns" | awk '{print $1}')" \
+    "$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')" \
+    "globe icon applied"
+  teardown_sandbox
+}
+
+test_desktop_shortcut_is_symlink_and_cleaned() {
+  test_start "Desktop shortcuts are symlinks and clean removes them"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create --desktop Work >/dev/null
+  assert_true "Desktop entry is a symlink" test -L "$HOME/Desktop/Claude Work.app"
+  mkdir -p "$HOME/Desktop/Claude Other.app"
+  capture_script clean >/dev/null
+  assert_file_missing "$HOME/Desktop/Claude Work.app" "Desktop shortcut removed"
+  assert_file_exists "$HOME/Desktop/Claude Other.app" "unrelated Desktop app kept"
+  teardown_sandbox
+}
+
+test_reserved_profiles_label_and_version() {
+  test_start "Profiles is reserved; version prints"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local out code
+  set +e
+  out="$(capture_script create profiles 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "Profiles label rejected"
+  assert_contains "$out" "reserved" "explains why"
+  assert_contains "$(capture_script version)" "claude-fix 1." "version command"
   teardown_sandbox
 }
 
@@ -1305,6 +1530,16 @@ main() {
   test_management_menu_clean_keep_data
   test_management_menu_clean_purge
   test_non_macos_rejected
+  test_picker_created_with_launchers
+  test_picker_not_treated_as_profile
+  test_helper_routes_to_running_profile
+  test_helper_launches_missing_profile_with_link
+  test_helper_matches_paths_with_spaces
+  test_icon_command_sets_custom_image
+  test_icon_command_builtin_and_claude
+  test_management_menu_change_icon
+  test_desktop_shortcut_is_symlink_and_cleaned
+  test_reserved_profiles_label_and_version
 
   print_summary
 }

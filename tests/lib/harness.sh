@@ -142,7 +142,8 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_LAUNCH_ANSWER CLAUDE_LAUNCHERS_DOCK_ANSWER \
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
-    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES 2>/dev/null || true
+    CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
+    CLAUDE_LAUNCHERS_ICON_ANSWER 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -163,14 +164,15 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
     CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
-    MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
+    CLAUDE_LAUNCHERS_ICON_ANSWER MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
 # Minimal fake Claude.app with an icon resource.
 create_mock_claude() {
   local root="${1:-$HOME/Applications/Claude.app}"
   mkdir -p "$root/Contents/Resources" "$root/Contents/MacOS"
-  touch "$root/Contents/MacOS/Claude"
+  printf '#!/bin/bash\nexit 0\n' >"$root/Contents/MacOS/Claude"
+  chmod +x "$root/Contents/MacOS/Claude"
   printf 'mock-claude-icon\n' > "$root/Contents/Resources/AppIcon.icns"
   export CLAUDE_LAUNCHERS_CLAUDE_APP="$root"
 }
@@ -229,9 +231,18 @@ create_generated_launcher() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   touch "$app/Contents/MacOS/applet"
   touch "$app/Contents/Resources/applet.icns"
-  printf '#!/bin/bash\nopen -n -a Claude\n' >"$app/Contents/Resources/launch-profile.sh"
-  chmod +x "$app/Contents/Resources/launch-profile.sh"
-  printf 'generated-by=claude-fix\nlabel=%s\nlauncher-version=4\n' "$label" >"$app/$MARKER_REL"
+  printf '#!/bin/bash\nexit 0\n' >"$app/Contents/Resources/claude-fix.sh"
+  chmod +x "$app/Contents/Resources/claude-fix.sh"
+  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=5\n' "$label" >"$app/$MARKER_REL"
+  create_generated_picker
+}
+
+# Current Claude Profiles.app, so existing launchers do not count as outdated.
+create_generated_picker() {
+  local app="$HOME/Applications/Claude Profiles.app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  touch "$app/Contents/MacOS/applet"
+  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=5\n' >"$app/$MARKER_REL"
 }
 
 # Old v1-style launcher (always open -n; no focus helper) for upgrade tests.
