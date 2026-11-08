@@ -347,8 +347,8 @@ method above.
 ./claude-fix help
 ```
 
-After creation, the script opens `~/Applications` in Finder unless it already
-launched the new profile for you.
+The script doesn't open Finder on its own. To see the launchers, choose "Open the
+launchers folder" in the menu.
 
 If you choose to launch the new profile right away, only that new Claude window
 opens. Sign into it with your other account, then connect the matching tools.

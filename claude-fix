@@ -3137,9 +3137,6 @@ $dir
   fi
 
   print_completion_message
-  if [ "$LAUNCH_AFTER_CREATE" != "1" ] && [ "${CLAUDE_LAUNCHERS_NO_OPEN:-}" != "1" ]; then
-    open "$APPS"
-  fi
 }
 
 clean_setup() {
@@ -3218,9 +3215,7 @@ clean_setup() {
   echo
   echo "Cleaned - back to standard: only the normal Claude.app remains."
   [ "$purge" = "0" ] && echo "Profile data (~/Claude*) was kept. To remove it too, run: clean --purge"
-  if [ "${CLAUDE_LAUNCHERS_NO_OPEN:-}" != "1" ]; then
-    open "$APPS" 2>/dev/null || true
-  fi
+  return 0
 }
 
 # Run when executed directly, or when piped to bash (curl | bash). Skip when sourced.
