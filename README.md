@@ -368,15 +368,16 @@ Found generated profile launcher(s):
     local sign-in: ~/ClaudePersonal
 
 What would you like to do next?
-  1) Open a generated Claude profile
-  2) Open all generated Claude profiles
+  1) Open a profile
+  2) Open all profiles
   3) Open the launchers folder
   4) Create another profile
-  5) Fix wrong account / start fresh for a generated profile
-  6) Remove generated launchers (keep local sign-ins)
-  7) Remove launchers AND local generated profile data
-  8) Upgrade launchers + quit duplicate Claude windows
-  9) Cancel
+  5) Fix wrong account / start fresh
+  6) Change a profile's icon
+  7) Remove launchers (keep sign-ins)
+  8) Remove launchers and sign-in data
+  9) Upgrade launchers
+  10) Cancel
 ```
 
 Use **start fresh** if a generated launcher opens the wrong account. It clears that
@@ -385,9 +386,44 @@ its profile icon), and always pins the launcher to the Dock (removing any stale 
 first). It does not delete your Claude account and does not change the normal Claude
 app. After clearing, the script opens the launcher so you can sign in again.
 
-Use **upgrade** (menu option 8, or `upgrade` on the CLI) if you see **many identical
-orange Claude icons** in the Dock. Old launchers always opened a new process; upgraded
-launchers focus the existing window for that profile and quit extras.
+Use **upgrade** (menu option 9, or `upgrade` on the CLI) after updating claude-fix.
+It rebuilds every launcher, adds **Claude Profiles** if it's missing, and quits
+duplicate Claude processes. Sign-ins are kept.
+
+### Sign-in links: choose which Claude
+
+Claude Desktop registers itself for `claude://` links every time it starts, so with
+several profiles running, a browser sign-in (or a connector's OAuth callback) used to
+land in whichever profile launched last.
+
+claude-fix now builds a small **Claude Profiles** app in `~/Applications` and makes it
+the handler for `claude://`. When a sign-in link comes back from the browser it asks
+**"Continue in which Claude?"**, with the profile you used last already selected, and
+hands the link to that profile, starting it if needed. Opened directly, it works as a
+quick profile switcher.
+
+Each profile launch briefly re-claims `claude://`, because Claude takes it back when it
+starts. If you open the plain `Claude.app` yourself, links go straight to it until you
+next click a launcher. The first time a link is handed to a running profile, macOS asks
+to let Claude Profiles control Claude. Allow it. `clean` removes Claude Profiles and
+gives `claude://` back to Claude.
+
+### Icons
+
+Pick a built-in icon, any image, or Claude's own icon for any profile:
+
+```bash
+claude-fix icon Work code
+claude-fix icon Personal ~/Pictures/me.png
+claude-fix icon "Big Client" claude
+claude-fix icon Work default
+```
+
+Built-in icons: `work`, `personal`, `home`, `code`, `star`, `heart`, `book`,
+`globe`, `bolt`, `leaf`, `moon`, `chat`. Images are center-cropped to a square. Your
+choice is saved in `~/.claude-fix/custom-icons` and survives `upgrade` and start
+fresh. The menu's **Change a profile's icon** does the same, and you can drag an image
+into Terminal when it asks.
 
 ### Commands at a glance
 
@@ -403,9 +439,11 @@ launchers focus the existing window for that profile and quit extras.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
-| `upgrade` | Rebuild all launchers (focus-if-open) and quit duplicate Claude windows. |
+| `icon <label> <icon>` | Set a built-in icon, an image file, `claude`, or `default`. |
+| `upgrade` | Rebuild all launchers, add Claude Profiles, quit duplicate Claude windows. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
+| `version` | Print the version. |
 | `help` | Print usage. |
 
 ---
@@ -464,8 +502,11 @@ profile directory are rejected.
    These are not Claude/Anthropic assets. After
    `osacompile`, any `Assets.car` is removed so `applet.icns` is used (fixes
    generic white icons).
-4. **Compile launchers** — `osacompile` turns a one-line `open -n ... --user-data-dir`
-   command into a real `.app` bundle.
+4. **Compile launchers.** `osacompile` builds a small AppleScript app that runs a
+   bundled helper (`Contents/Resources/claude-fix.sh`). The helper reads the
+   profile's data folder and Claude's location from the marker file next to it.
+   Each launcher gets its own bundle ID, is ad-hoc signed after it is edited, and
+   is registered with Launch Services so icon changes show up right away.
 5. **Optional Dock pinning** — with `--dock`, launcher paths are added to the
    Dock's `persistent-apps` plist using the same structure macOS expects
    (`tile-type=file-tile`, `_CFURLStringType=15`, percent-encoded `file://`
@@ -474,10 +515,11 @@ profile directory are rejected.
 6. **Refresh Finder metadata** — `touch`es the bundle so
    Finder picks up the change.
 
-`-n` tells macOS to launch a **new instance** only when that profile is not
-already running. If a Claude process with the same `--user-data-dir` exists,
-the launcher **focuses that window** instead — so re-clicking Work/Personal
-does not stack orange Dock icons.
+When the profile isn't running, the helper starts it with
+`open -n -a Claude --args --user-data-dir=...`. When it is, the helper sends that exact
+process a reopen Apple event (addressed by PID, since every profile shares Claude's
+bundle ID) and activates it. The reopen is what brings back a window you had closed;
+activating the process alone left Claude running with nothing on screen.
 
 Important caveat: profile isolation depends on Claude Desktop continuing to
 honor Electron/Chromium's `--user-data-dir` flag. That works today for this use
@@ -501,13 +543,16 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   directories such as `~/ClaudePersonal`; it never deletes your normal Claude
   app or its default profile data.
 - **No dependencies or package installs.** The script uses only built-in macOS
-  tooling and never installs Python packages.
+  tooling and never installs Python packages. Dock pinning and letter badges need
+  the Command Line Tools; without them the script skips those steps instead of
+  triggering the installer.
 
 ---
 
 ## What this does not do
 
-- It does **not** modify, patch, or re-sign `Claude.app`.
+- It does **not** modify, patch, or re-sign `Claude.app`. Only the launchers and
+  Claude Profiles it generates are ad-hoc signed.
 - It does **not** bypass account limits, authentication, or company policy.
 - It does **not** migrate or merge chat history between profiles.
 - It does **not** encrypt Claude profile data. Profiles are stored as normal
@@ -532,10 +577,15 @@ use the pinned **launcher** icons in the Dock to open the right profile.
 - **Desktop icons grouped under "Applications"** — macOS Desktop Stacks may
   group `.app` launchers together. Right-click the Desktop and turn off
   `Use Stacks`, or open the Applications stack.
-- **Launcher icons look generic or white** — re-run `create` from a cloned repo
-  (so `icons/` is available). The script removes `Assets.car` and installs
-  original profile icons. If you used the one-line curl install, clone the repo
-  and run `./make_claude_launchers.sh create Work Personal` to refresh icons.
+- **Launcher icons look generic or white.** Run `upgrade`. Launchers built by
+  older versions kept a `CFBundleIconName` that pointed at a deleted asset catalog.
+  If the Dock still shows the old icon, run `killall Dock`.
+- **Clicking a launcher does nothing, or a closed window doesn't come back.** Run
+  `upgrade`. Older launchers only activated the process, which doesn't reopen a
+  closed window.
+- **A sign-in finished in the wrong Claude.** Run `upgrade` to add Claude Profiles,
+  then sign in again. If Claude Profiles says it couldn't open the profile, allow it
+  under System Settings > Privacy & Security > Automation.
 - **Dock setup** — re-run with `--dock` to pin launchers, or `--dock
   --dock-cleanup` to replace duplicate `Claude.app` pins. First-run setup,
   **Create another profile**, and **start fresh** (when the launcher is already
@@ -570,8 +620,8 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   moment or run `killall Dock`.
 - **Both profiles share data** — this only happens if your Claude build ignores
   `--user-data-dir`. Verify by signing into different accounts in each launcher.
-- **macOS Gatekeeper warning** — the launchers are locally generated and
-  unsigned. Right-click → **Open** the first time if prompted.
+- **macOS Gatekeeper warning.** The launchers are generated on your Mac and
+  ad-hoc signed, so this should not appear. If it does, right-click → **Open**.
 
 ---
 
@@ -605,7 +655,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (74 tests). Run it directly —
+The suite takes about **30–60 seconds** on macOS (86 tests). Run it directly —
 piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
@@ -643,6 +693,10 @@ Progress is mirrored to stderr when stdout is piped.
 | **clean --purge** | Decline (default), confirm `y`/`Y`, delete profile data |
 | **Quoted paths** | Claude.app in paths with quotes, `$`, backticks, backslashes |
 | **Full lifecycle** | create → clean → re-create with data preserved |
+| **Claude Profiles** | Built with launchers, owns `claude://`, lists profiles, never treated as a profile |
+| **Runtime helper** | Routes reopen and links to the right PID; launches a stopped profile with the link; paths with spaces |
+| **Icons** | `icon` with images, built-in names, `claude`, `default`; survives upgrade; menu option |
+| **Desktop** | Shortcuts are symlinks and `clean` removes them |
 
 Tests require **macOS** (`osacompile`, `osascript`). On Linux they
 exit gracefully with a skip message.
@@ -651,7 +705,40 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 
 ---
 
+## Releasing
+
+1. Bump `CLAUDE_FIX_VERSION` in `make_claude_launchers.sh` and add release notes below.
+2. Tag and push: `git tag v1.3.0 && git push origin v1.3.0`.
+3. The Release workflow runs the tests, checks the tag matches the version, publishes
+   the GitHub release, and prints the `url` and `sha256` lines for
+   `Formula/claude-fix.rb` in `sarhej/homebrew-claude-fix`.
+
+To regenerate the icons after changing `icons/glyphs.json` or the palette, run
+`swift icons/generate_icons.swift` on a Mac.
+
+---
+
 ## Release notes
+
+### v1.3.0
+
+**Choose which Claude gets a sign-in, change icons, reliable reopen**
+
+- New **Claude Profiles** app handles `claude://` links and asks which Claude a
+  sign-in or connector callback belongs to
+- Clicking a launcher brings back the profile's window even after it was closed,
+  using a reopen Apple event sent to that exact process
+- New `icon` command and menu option, with 10 new built-in icons, any image file,
+  or Claude's own icon
+- Launchers get their own bundle ID, are re-signed after editing, and are
+  registered with Launch Services, so icon changes show up
+- Desktop shortcuts are symlinks, and `clean` removes them
+- No more Command Line Tools installer pop-ups from Dock pinning or icon badges
+- `version` command, and a release workflow that publishes releases and prints
+  the Homebrew formula checksum
+- Launcher version 5. Run `upgrade`
+
+---
 
 ### v1.2.2 — 2026-07-16
 

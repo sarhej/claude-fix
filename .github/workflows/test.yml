@@ -5,21 +5,44 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-macos:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Make script executable
-        run: chmod +x make_claude_launchers.sh
 
       - name: Install ShellCheck
         run: brew install shellcheck
 
-      - name: Run ShellCheck
+      - name: ShellCheck
         run: shellcheck make_claude_launchers.sh tests/run_tests.sh tests/lib/harness.sh
+
+      - name: Check the generated runtime helper
+        run: |
+          tmp=$(mktemp -d)
+          bash -c 'source make_claude_launchers.sh; write_runtime_helper "$1"' _ "$tmp"
+          shellcheck "$tmp/claude-fix.sh"
+          osacompile -l JavaScript -o "$tmp/focus.scpt" "$tmp/focus.js"
+          osacompile -l JavaScript -o "$tmp/claim.scpt" "$tmp/claim.js"
+
+      - name: Check the icon generator builds the built-in icons
+        run: |
+          tmp=$(mktemp -d)
+          cp icons/generate_icons.swift icons/glyphs.json "$tmp/"
+          swift "$tmp/generate_icons.swift"
+          for name in home code star heart book globe bolt leaf moon chat; do
+            test -s "$tmp/$name.icns"
+          done
 
       - name: Run test suite
         run: bash tests/run_tests.sh
