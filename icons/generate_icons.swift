@@ -1,36 +1,45 @@
 #!/usr/bin/env swift
+// claude-fix profile icons.
+//
+//   swift generate_icons.swift
+//       Regenerate the flat fallback icons in this folder from glyphs.json.
+//
+//   generate_icons --app /Applications/Claude.app --output applet.icns
+//       [--symbol NAME | --letter L | --no-badge] [--color NAME | #RRGGBB]
+//       [--assets-car Assets.car] [--symbols glyphs.json]
+//       Recolor the app's own icon and add a badge. Because the icon is read from the
+//       installed app, launchers follow Claude's icon when it changes. With --assets-car
+//       and Xcode 26's actool available, also build a layered icon so macOS can draw its
+//       Default, Dark, Clear and Tinted styles.
+//
+//   generate_icons --index N --letter L --output out.icns
+//       Flat letter icon in palette color N.
 import AppKit
 import Foundation
 
-enum IconKind {
-    case briefcase
-    case person
-    case letter(String)
-    case glyph(Glyph)
-    case plain
+// MARK: - glyphs.json
+
+struct SymbolFile: Decodable {
+    let colors: [String: [Double]]
+    let palette: [String]
+    let symbols: [Symbol]
 }
 
-// Built-in icons from glyphs.json. Coordinates are fractions of the icon size,
-// origin bottom-left; the parts of one shape fill even-odd.
-struct GlyphFile: Decodable {
-    let icons: [Glyph]
-}
-
-struct Glyph: Decodable {
+struct Symbol: Decodable {
     let name: String
-    let color: [Double]
-    let shapes: [GlyphShape]
+    let color: String
+    let shapes: [Shape]
 }
 
-struct GlyphShape: Decodable {
+struct Shape: Decodable {
     let fill: Bool?
     let stroke: Double?
     let alpha: Double?
     let background: Bool?
-    let parts: [GlyphPart]
+    let parts: [Part]
 }
 
-struct GlyphPart: Decodable {
+struct Part: Decodable {
     let d: [[PathValue]]?
     let circle: [Double]?
     let ellipse: [Double]?
@@ -62,168 +71,64 @@ enum PathValue: Decodable {
     }
 }
 
-struct ProfileIcon {
-    let name: String
-    let kind: IconKind
-    let red: CGFloat
-    let green: CGFloat
-    let blue: CGFloat
+struct RGB {
+    var r: Double
+    var g: Double
+    var b: Double
 
-    var fillColor: NSColor {
-        NSColor(red: red, green: green, blue: blue, alpha: 1.0)
+    var color: NSColor { NSColor(srgbRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1) }
+}
+
+func fail(_ message: String) -> Never {
+    fputs("generate_icons: \(message)\n", stderr)
+    exit(1)
+}
+
+func loadSymbols(_ url: URL) -> SymbolFile {
+    do {
+        return try JSONDecoder().decode(SymbolFile.self, from: Data(contentsOf: url))
+    } catch {
+        fail("\(url.path): \(error.localizedDescription)")
     }
 }
 
-// Avoid corporate / Word-like blues. Work = indigo, Personal = sage.
-let palette: [ProfileIcon] = [
-    ProfileIcon(name: "profile-0", kind: .briefcase, red: 0.38, green: 0.35, blue: 0.78),
-    ProfileIcon(name: "profile-1", kind: .person, red: 0.45, green: 0.68, blue: 0.52),
-    ProfileIcon(name: "profile-2", kind: .plain, red: 0.96, green: 0.55, blue: 0.28),
-    ProfileIcon(name: "profile-3", kind: .plain, red: 0.58, green: 0.33, blue: 0.86),
-    ProfileIcon(name: "profile-4", kind: .plain, red: 0.12, green: 0.68, blue: 0.74),
-    ProfileIcon(name: "profile-5", kind: .plain, red: 0.86, green: 0.26, blue: 0.55),
-    ProfileIcon(name: "profile-6", kind: .plain, red: 0.93, green: 0.42, blue: 0.31),
-    ProfileIcon(name: "profile-7", kind: .plain, red: 0.45, green: 0.50, blue: 0.56),
-]
-
-let iconsetEntries: [(name: String, size: Int)] = [
-    ("icon_16x16", 16),
-    ("icon_16x16@2x", 32),
-    ("icon_32x32", 32),
-    ("icon_32x32@2x", 64),
-    ("icon_128x128", 128),
-    ("icon_128x128@2x", 256),
-    ("icon_256x256", 256),
-    ("icon_256x256@2x", 512),
-    ("icon_512x512", 512),
-    ("icon_512x512@2x", 1024),
-]
-
-func repoIconsDir() -> URL {
-    let scriptPath = CommandLine.arguments[0]
-    let scriptURL = URL(fileURLWithPath: scriptPath).standardizedFileURL
-    return scriptURL.deletingLastPathComponent()
+func namedColor(_ name: String, in file: SymbolFile) -> RGB? {
+    guard let c = file.colors[name.lowercased()], c.count == 3 else { return nil }
+    return RGB(r: c[0], g: c[1], b: c[2])
 }
 
-func roundedRect(_ rect: NSRect, radius: CGFloat) -> NSBezierPath {
-    NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+func parseColor(_ value: String, in file: SymbolFile) -> RGB? {
+    if let named = namedColor(value, in: file) { return named }
+    var hex = value
+    if hex.hasPrefix("#") { hex.removeFirst() }
+    guard hex.count == 6, let n = UInt32(hex, radix: 16) else { return nil }
+    return RGB(r: Double((n >> 16) & 0xff) / 255, g: Double((n >> 8) & 0xff) / 255, b: Double(n & 0xff) / 255)
 }
 
-func drawBackground(_ spec: ProfileIcon, in rect: NSRect, dim: CGFloat) {
-    let radius = dim * 0.22
-    spec.fillColor.setFill()
-    roundedRect(rect, radius: radius).fill()
-}
+// MARK: - Drawing
 
-func drawInnerRing(in rect: NSRect, dim: CGFloat) {
-    let inset = dim * 0.14
-    let inner = rect.insetBy(dx: inset, dy: inset)
-    let ringWidth = max(1.0, dim * 0.045)
-    let path = roundedRect(inner, radius: inner.width * 0.18)
-    path.lineWidth = ringWidth
-    NSColor(white: 1.0, alpha: 0.92).setStroke()
-    path.stroke()
-}
-
-func drawBriefcase(in rect: NSRect, dim: CGFloat) {
-    let cx = rect.midX
-    let cy = rect.midY - dim * 0.02
-    let bodyW = dim * 0.34
-    let bodyH = dim * 0.24
-    let body = NSRect(x: cx - bodyW / 2, y: cy - bodyH / 2, width: bodyW, height: bodyH)
-    let bodyPath = roundedRect(body, radius: dim * 0.04)
-    NSColor.white.setFill()
-    bodyPath.fill()
-
-    let handleW = dim * 0.18
-    let handleH = dim * 0.10
-    let handleRect = NSRect(
-        x: cx - handleW / 2,
-        y: body.maxY - dim * 0.02,
-        width: handleW,
-        height: handleH
-    )
-    let handlePath = NSBezierPath()
-    handlePath.lineWidth = max(1.2, dim * 0.035)
-    handlePath.lineCapStyle = .round
-    handlePath.move(to: NSPoint(x: handleRect.minX, y: handleRect.minY + handlePath.lineWidth / 2))
-    handlePath.line(to: NSPoint(x: handleRect.minX, y: handleRect.midY))
-    handlePath.curve(
-        to: NSPoint(x: handleRect.maxX, y: handleRect.midY),
-        controlPoint1: NSPoint(x: cx - handleW * 0.15, y: handleRect.maxY),
-        controlPoint2: NSPoint(x: cx + handleW * 0.15, y: handleRect.maxY)
-    )
-    handlePath.line(to: NSPoint(x: handleRect.maxX, y: handleRect.minY + handlePath.lineWidth / 2))
-    NSColor.white.setStroke()
-    handlePath.stroke()
-
-    let claspW = dim * 0.05
-    let claspH = dim * 0.06
-    let clasp = NSRect(x: cx - claspW / 2, y: body.midY - claspH / 2, width: claspW, height: claspH)
-    NSColor(white: 1.0, alpha: 0.55).setFill()
-    roundedRect(clasp, radius: dim * 0.012).fill()
-}
-
-func drawPerson(in rect: NSRect, dim: CGFloat) {
-    let cx = rect.midX
-    let headR = dim * 0.085
-    let headY = rect.midY + dim * 0.10
-    let head = NSBezierPath(ovalIn: NSRect(
-        x: cx - headR,
-        y: headY - headR,
-        width: headR * 2,
-        height: headR * 2
-    ))
-    NSColor.white.setFill()
-    head.fill()
-
-    let shoulderW = dim * 0.30
-    let bodyH = dim * 0.18
-    let bodyY = headY - headR - dim * 0.02
-    let body = NSBezierPath()
-    body.move(to: NSPoint(x: cx - shoulderW / 2, y: bodyY))
-    body.line(to: NSPoint(x: cx - shoulderW / 2 + dim * 0.04, y: bodyY - bodyH))
-    body.line(to: NSPoint(x: cx + shoulderW / 2 - dim * 0.04, y: bodyY - bodyH))
-    body.line(to: NSPoint(x: cx + shoulderW / 2, y: bodyY))
-    body.close()
-    body.fill()
-}
-
-func drawLetter(_ letter: String, in rect: NSRect, dim: CGFloat) {
-    let fontSize = dim * 0.40
-    let font = NSFont.systemFont(ofSize: fontSize, weight: .heavy)
-    let stroke = max(0.8, dim * 0.025)
-    let attrs: [NSAttributedString.Key: Any] = [
-        .font: font,
-        .foregroundColor: NSColor.white,
-        .strokeColor: NSColor(white: 1.0, alpha: 0.35),
-        .strokeWidth: -stroke * 2,
-    ]
-    let text = letter as NSString
-    let textSize = text.size(withAttributes: attrs)
-    let point = NSPoint(
-        x: rect.midX - textSize.width / 2,
-        y: rect.midY - textSize.height / 2 - dim * 0.01
-    )
-    text.draw(at: point, withAttributes: attrs)
-}
-
-func glyphPath(_ parts: [GlyphPart], dim: CGFloat) -> NSBezierPath {
+/// Builds a symbol's path. `map` places a point given in symbol units; `scale` converts lengths.
+func symbolPath(_ parts: [Part], map: (CGFloat, CGFloat) -> NSPoint, scale: CGFloat) -> NSBezierPath {
     let path = NSBezierPath()
-    func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x * dim, y: y * dim) }
     for part in parts {
-        if let c = part.circle?.map({ CGFloat($0) }) {
-            path.appendOval(in: NSRect(x: (c[0] - c[2]) * dim, y: (c[1] - c[2]) * dim, width: c[2] * 2 * dim, height: c[2] * 2 * dim))
-        } else if let e = part.ellipse?.map({ CGFloat($0) }) {
-            path.appendOval(in: NSRect(x: (e[0] - e[2]) * dim, y: (e[1] - e[3]) * dim, width: e[2] * 2 * dim, height: e[3] * 2 * dim))
-        } else if let r = part.rrect?.map({ CGFloat($0) }) {
-            path.appendRoundedRect(NSRect(x: r[0] * dim, y: r[1] * dim, width: r[2] * dim, height: r[3] * dim), xRadius: r[4] * dim, yRadius: r[4] * dim)
-        } else if let s = part.star?.map({ CGFloat($0) }) {
-            let points = Int(s[4])
+        if let c = part.circle?.map({ CGFloat($0) }), c.count == 3 {
+            let center = map(c[0], c[1])
+            let r = c[2] * scale
+            path.appendOval(in: NSRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2))
+        } else if let e = part.ellipse?.map({ CGFloat($0) }), e.count == 4 {
+            let center = map(e[0], e[1])
+            path.appendOval(in: NSRect(x: center.x - e[2] * scale, y: center.y - e[3] * scale,
+                                       width: e[2] * 2 * scale, height: e[3] * 2 * scale))
+        } else if let r = part.rrect?.map({ CGFloat($0) }), r.count == 5 {
+            let origin = map(r[0], r[1])
+            path.appendRoundedRect(NSRect(x: origin.x, y: origin.y, width: r[2] * scale, height: r[3] * scale),
+                                   xRadius: r[4] * scale, yRadius: r[4] * scale)
+        } else if let s = part.star?.map({ CGFloat($0) }), s.count == 5 {
+            let points = max(3, Int(s[4]))
             for i in 0..<(points * 2) {
                 let angle = CGFloat.pi / 2 + CGFloat(i) * CGFloat.pi / CGFloat(points)
                 let radius = i % 2 == 0 ? s[2] : s[3]
-                let p = point(s[0] + radius * cos(angle), s[1] + radius * sin(angle))
+                let p = map(s[0] + radius * cos(angle), s[1] + radius * sin(angle))
                 if i == 0 { path.move(to: p) } else { path.line(to: p) }
             }
             path.close()
@@ -231,9 +136,10 @@ func glyphPath(_ parts: [GlyphPart], dim: CGFloat) -> NSBezierPath {
             for op in ops {
                 let n = op.dropFirst().map { $0.number }
                 switch op.first?.op ?? "" {
-                case "M": path.move(to: point(n[0], n[1]))
-                case "L": path.line(to: point(n[0], n[1]))
-                case "C": path.curve(to: point(n[4], n[5]), controlPoint1: point(n[0], n[1]), controlPoint2: point(n[2], n[3]))
+                case "M" where n.count >= 2: path.move(to: map(n[0], n[1]))
+                case "L" where n.count >= 2: path.line(to: map(n[0], n[1]))
+                case "C" where n.count >= 6:
+                    path.curve(to: map(n[4], n[5]), controlPoint1: map(n[0], n[1]), controlPoint2: map(n[2], n[3]))
                 case "Z": path.close()
                 default: break
                 }
@@ -243,12 +149,12 @@ func glyphPath(_ parts: [GlyphPart], dim: CGFloat) -> NSBezierPath {
     return path
 }
 
-func drawGlyph(_ glyph: Glyph, spec: ProfileIcon, dim: CGFloat) {
-    for shape in glyph.shapes {
-        let path = glyphPath(shape.parts, dim: dim)
-        let color = shape.background == true ? spec.fillColor : NSColor(white: 1.0, alpha: CGFloat(shape.alpha ?? 1.0))
+func drawSymbol(_ symbol: Symbol, map: (CGFloat, CGFloat) -> NSPoint, scale: CGFloat, ink: NSColor, background: NSColor) {
+    for shape in symbol.shapes {
+        let path = symbolPath(shape.parts, map: map, scale: scale)
+        let color = shape.background == true ? background : ink.withAlphaComponent(CGFloat(shape.alpha ?? 1))
         if let width = shape.stroke {
-            path.lineWidth = max(1.0, CGFloat(width) * dim)
+            path.lineWidth = max(1, CGFloat(width) * scale)
             path.lineCapStyle = .round
             path.lineJoinStyle = .round
             color.setStroke()
@@ -261,147 +167,446 @@ func drawGlyph(_ glyph: Glyph, spec: ProfileIcon, dim: CGFloat) {
     }
 }
 
-func drawIcon(_ spec: ProfileIcon, size: Int) -> NSImage {
-    let dim = CGFloat(size)
-    let image = NSImage(size: NSSize(width: dim, height: dim))
-    image.lockFocus()
+func drawLetter(_ letter: String, center: NSPoint, height: CGFloat, color: NSColor) {
+    let font = NSFont.systemFont(ofSize: height, weight: .heavy)
+    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+    let text = letter as NSString
+    let width = text.size(withAttributes: attrs).width
+    // Center the capitals: the draw origin sits at the descender line.
+    text.draw(at: NSPoint(x: center.x - width / 2, y: center.y - font.capHeight / 2 + font.descender), withAttributes: attrs)
+}
 
-    NSColor.clear.setFill()
-    NSRect(x: 0, y: 0, width: dim, height: dim).fill()
+/// An RGBA bitmap with a drawing context; `draw` receives the size in points.
+func canvas(_ size: Int, _ draw: (CGFloat) -> Void) -> NSBitmapImageRep {
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
+                                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: size * 4, bitsPerPixel: 32),
+          let context = NSGraphicsContext(bitmapImageRep: rep) else {
+        fail("could not create a \(size)px bitmap")
+    }
+    rep.size = NSSize(width: size, height: size)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    context.imageInterpolation = .high
+    draw(CGFloat(size))
+    context.flushGraphics()
+    NSGraphicsContext.restoreGraphicsState()
+    return rep
+}
 
+func pngData(_ rep: NSBitmapImageRep) -> Data {
+    guard let data = rep.representation(using: .png, properties: [:]) else { fail("PNG encoding failed") }
+    return data
+}
+
+func run(_ tool: String, _ arguments: [String]) -> Bool {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: tool)
+    task.arguments = arguments
+    task.standardOutput = FileHandle.nullDevice
+    task.standardError = FileHandle.nullDevice
+    do { try task.run() } catch { return false }
+    task.waitUntilExit()
+    return task.terminationStatus == 0
+}
+
+let iconsetEntries: [(name: String, size: Int)] = [
+    ("icon_16x16", 16), ("icon_16x16@2x", 32), ("icon_32x32", 32), ("icon_32x32@2x", 64),
+    ("icon_128x128", 128), ("icon_128x128@2x", 256), ("icon_256x256", 256), ("icon_256x256@2x", 512),
+    ("icon_512x512", 512), ("icon_512x512@2x", 1024),
+]
+
+func temporaryDirectory() -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("claude-fix-icon-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+func writeIcns(to output: URL, draw: (CGFloat) -> Void) {
+    let work = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: work) }
+    let iconset = work.appendingPathComponent("icon.iconset")
+    do {
+        try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+        for entry in iconsetEntries {
+            try pngData(canvas(entry.size, draw)).write(to: iconset.appendingPathComponent("\(entry.name).png"))
+        }
+    } catch {
+        fail(error.localizedDescription)
+    }
+    try? FileManager.default.removeItem(at: output)
+    if !run("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", output.path]) {
+        fail("iconutil failed for \(output.path)")
+    }
+}
+
+// MARK: - Flat icons (fallback when an app icon can't be recolored)
+
+func drawFlat(dim: CGFloat, color: RGB, symbol: Symbol?, letter: String?) {
     let inset = dim * 0.08
     let rect = NSRect(x: inset, y: inset, width: dim - inset * 2, height: dim - inset * 2)
+    color.color.setFill()
+    NSBezierPath(roundedRect: rect, xRadius: dim * 0.22, yRadius: dim * 0.22).fill()
 
-    drawBackground(spec, in: rect, dim: dim)
-    drawInnerRing(in: rect, dim: dim)
+    let inner = rect.insetBy(dx: dim * 0.14, dy: dim * 0.14)
+    let ring = NSBezierPath(roundedRect: inner, xRadius: inner.width * 0.18, yRadius: inner.width * 0.18)
+    ring.lineWidth = max(1, dim * 0.045)
+    NSColor(white: 1, alpha: 0.92).setStroke()
+    ring.stroke()
 
-    switch spec.kind {
-    case .briefcase:
-        drawBriefcase(in: rect, dim: dim)
-    case .person:
-        drawPerson(in: rect, dim: dim)
-    case .letter(let letter):
-        drawLetter(letter, in: rect, dim: dim)
-    case .glyph(let glyph):
-        drawGlyph(glyph, spec: spec, dim: dim)
-    case .plain:
-        break
+    if let symbol = symbol {
+        drawSymbol(symbol, map: { NSPoint(x: $0 * dim, y: $1 * dim) }, scale: dim, ink: .white, background: color.color)
+    } else if let letter = letter {
+        drawLetter(letter, center: NSPoint(x: rect.midX, y: rect.midY), height: dim * 0.40, color: .white)
     }
-
-    image.unlockFocus()
-    return image
 }
 
-func writePNG(_ image: NSImage, to url: URL) throws {
-    guard let tiff = image.tiffRepresentation,
-          let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:]) else {
-        throw NSError(domain: "generate_icons", code: 1, userInfo: [NSLocalizedDescriptionKey: "PNG encode failed"])
-    }
-    try png.write(to: url)
+// MARK: - Recolored app icon
+
+struct HSV {
+    var h: Double
+    var s: Double
+    var v: Double
 }
 
-func buildIcns(spec: ProfileIcon, outputPath: URL, workDir: URL) throws {
-    let fileManager = FileManager.default
-    let iconset = workDir.appendingPathComponent("icon.iconset")
-    try? fileManager.removeItem(at: iconset)
-    try fileManager.createDirectory(at: iconset, withIntermediateDirectories: true)
-
-    for entry in iconsetEntries {
-        let image = drawIcon(spec, size: entry.size)
-        try writePNG(image, to: iconset.appendingPathComponent("\(entry.name).png"))
+func toHSV(_ r: Double, _ g: Double, _ b: Double) -> HSV {
+    let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
+    var h = 0.0
+    if d > 0 {
+        if mx == r { h = (g - b) / d } else if mx == g { h = (b - r) / d + 2 } else { h = (r - g) / d + 4 }
+        h /= 6
+        if h < 0 { h += 1 }
     }
-
-    try? fileManager.removeItem(at: outputPath)
-
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-    task.arguments = ["-c", "icns", iconset.path, "-o", outputPath.path]
-    try task.run()
-    task.waitUntilExit()
-    if task.terminationStatus != 0 {
-        throw NSError(domain: "generate_icons", code: 2, userInfo: [NSLocalizedDescriptionKey: "iconutil failed"])
-    }
-    try? fileManager.removeItem(at: iconset)
+    return HSV(h: h, s: mx == 0 ? 0 : d / mx, v: mx)
 }
 
-func parseArgs(_ args: [String]) -> (index: Int?, letter: String?, output: String?) {
-    var index: Int?
-    var letter: String?
-    var output: String?
-    var i = 1
-    while i < args.count {
-        switch args[i] {
-        case "--index" where i + 1 < args.count:
-            index = Int(args[i + 1])
-            i += 2
-        case "--letter" where i + 1 < args.count:
-            letter = args[i + 1]
-            i += 2
-        case "--output" where i + 1 < args.count:
-            output = args[i + 1]
-            i += 2
-        default:
-            i += 1
+func toRGB(_ c: HSV) -> (Double, Double, Double) {
+    let h = (c.h - floor(c.h)) * 6
+    let i = Int(floor(h)) % 6, f = h - floor(h)
+    let p = c.v * (1 - c.s), q = c.v * (1 - c.s * f), t = c.v * (1 - c.s * (1 - f))
+    switch i {
+    case 0: return (c.v, t, p)
+    case 1: return (q, c.v, p)
+    case 2: return (p, c.v, t)
+    case 3: return (p, q, c.v)
+    case 4: return (t, p, c.v)
+    default: return (c.v, p, q)
+    }
+}
+
+func smoothstep(_ e0: Double, _ e1: Double, _ x: Double) -> Double {
+    let t = min(1, max(0, (x - e0) / (e1 - e0)))
+    return t * t * (3 - 2 * t)
+}
+
+struct Pixels {
+    let rep: NSBitmapImageRep
+    let count: Int
+    let data: UnsafeMutablePointer<UInt8>
+
+    init(_ rep: NSBitmapImageRep) {
+        guard let data = rep.bitmapData else { fail("bitmap has no data") }
+        self.rep = rep
+        self.count = rep.pixelsWide * rep.pixelsHigh
+        self.data = data
+    }
+
+    /// Straight (not premultiplied) color and alpha, 0...1.
+    func get(_ i: Int) -> (r: Double, g: Double, b: Double, a: Double) {
+        let a = Double(data[i * 4 + 3]) / 255
+        guard a > 0 else { return (0, 0, 0, 0) }
+        return (min(1, Double(data[i * 4]) / 255 / a), min(1, Double(data[i * 4 + 1]) / 255 / a),
+                min(1, Double(data[i * 4 + 2]) / 255 / a), a)
+    }
+
+    func set(_ i: Int, _ r: Double, _ g: Double, _ b: Double, _ a: Double) {
+        func byte(_ v: Double) -> UInt8 { UInt8(max(0, min(255, (v * a * 255).rounded()))) }
+        data[i * 4] = byte(r)
+        data[i * 4 + 1] = byte(g)
+        data[i * 4 + 2] = byte(b)
+        data[i * 4 + 3] = UInt8(max(0, min(255, (a * 255).rounded())))
+    }
+}
+
+/// The icon's brand color: the most common strongly saturated hue.
+func dominantColor(_ px: Pixels) -> HSV? {
+    var bins = [Double](repeating: 0, count: 36)
+    var opaque = 0
+    for i in 0..<px.count {
+        let p = px.get(i)
+        guard p.a > 0.5 else { continue }
+        opaque += 1
+        let c = toHSV(p.r, p.g, p.b)
+        if c.s > 0.35 && c.v > 0.25 { bins[Int(c.h * 36) % 36] += c.s }
+    }
+    guard let best = bins.indices.max(by: { bins[$0] < bins[$1] }),
+          bins.reduce(0, +) > Double(opaque) * 0.01 else { return nil }
+    var x = 0.0, y = 0.0, s = 0.0, v = 0.0, n = 0.0
+    for i in 0..<px.count {
+        let p = px.get(i)
+        guard p.a > 0.5 else { continue }
+        let c = toHSV(p.r, p.g, p.b)
+        guard c.s > 0.35 && c.v > 0.25 else { continue }
+        let distance = abs(Int(c.h * 36) % 36 - best)
+        guard min(distance, 36 - distance) <= 1 else { continue }
+        x += cos(2 * .pi * c.h)
+        y += sin(2 * .pi * c.h)
+        s += c.s
+        v += c.v
+        n += 1
+    }
+    guard n > 0 else { return nil }
+    var h = atan2(y, x) / (2 * .pi)
+    if h < 0 { h += 1 }
+    return HSV(h: h, s: s / n, v: v / n)
+}
+
+/// Moves the brand color to `target` and gives everything else the target's hue at its
+/// own saturation, so cream stays a pale tint and shading survives. Returns, per pixel,
+/// how much it belongs to the brand-colored foreground.
+func recolor(_ px: Pixels, to target: RGB) -> [Double] {
+    let t = toHSV(target.r, target.g, target.b)
+    let source = dominantColor(px)
+    var weights = [Double](repeating: 0, count: px.count)
+    for i in 0..<px.count {
+        let p = px.get(i)
+        guard p.a > 0 else { continue }
+        let c = toHSV(p.r, p.g, p.b)
+        var out: HSV
+        if let s0 = source {
+            var d = abs(c.h - s0.h)
+            d = min(d, 1 - d)
+            let w = (1 - smoothstep(0.06, 0.14, d)) * smoothstep(0.15, 0.35, c.s)
+            weights[i] = w
+            let mapped = HSV(h: t.h + (c.h - s0.h), s: min(1, c.s * t.s / max(s0.s, 0.01)),
+                             v: min(1, c.v * t.v / max(s0.v, 0.01)))
+            out = HSV(h: w > 0.5 ? mapped.h : t.h, s: c.s * (1 - w) + mapped.s * w, v: c.v * (1 - w) + mapped.v * w)
+        } else {
+            out = HSV(h: t.h, s: max(c.s, t.s * 0.35), v: c.v)
+        }
+        let rgb = toRGB(out)
+        px.set(i, rgb.0, rgb.1, rgb.2, p.a)
+    }
+    return weights
+}
+
+/// Bounds of the visible icon, in points with the origin at the bottom left.
+func opaqueBounds(_ px: Pixels) -> NSRect {
+    let w = px.rep.pixelsWide, h = px.rep.pixelsHigh
+    var minX = w, minY = h, maxX = -1, maxY = -1
+    for row in 0..<h {
+        for col in 0..<w where px.data[(row * w + col) * 4 + 3] > 25 {
+            minX = min(minX, col)
+            maxX = max(maxX, col)
+            minY = min(minY, h - 1 - row)
+            maxY = max(maxY, h - 1 - row)
         }
     }
-    return (index, letter, output)
+    guard maxX >= minX else { return NSRect(x: 0, y: 0, width: w, height: h) }
+    return NSRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
 }
 
-let args = CommandLine.arguments
-let (singleIndex, singleLetter, singleOutput) = parseArgs(args)
+enum Badge {
+    case symbol(Symbol)
+    case letter(String)
+    case none
+}
 
-if let idx = singleIndex, let letter = singleLetter, let output = singleOutput {
-    guard idx >= 0 && idx < palette.count else {
-        fputs("index out of range: \(idx)\n", stderr)
-        exit(1)
+/// A white disc in the bottom-right corner of `bounds`, holding the symbol or letter in `color`.
+func drawBadge(_ badge: Badge, color: RGB, in bounds: NSRect, canvasSize: CGFloat) {
+    if case .none = badge { return }
+    let diameter = bounds.width * 0.40
+    let center = NSPoint(x: min(canvasSize - diameter / 2 - 2, bounds.maxX - diameter * 0.36),
+                         y: max(diameter / 2 + 2, bounds.minY + diameter * 0.36))
+    let disc = NSRect(x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter)
+
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor(white: 0, alpha: 0.28)
+    shadow.shadowOffset = NSSize(width: 0, height: -diameter * 0.035)
+    shadow.shadowBlurRadius = diameter * 0.09
+    shadow.set()
+    NSColor.white.setFill()
+    NSBezierPath(ovalIn: disc).fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    // Keep light colors readable on white.
+    var ink = toHSV(color.r, color.g, color.b)
+    if ink.v > 0.8 && ink.s < 0.5 { ink.v = 0.6 }
+    let rgb = toRGB(ink)
+    let inkColor = RGB(r: rgb.0, g: rgb.1, b: rgb.2).color
+
+    switch badge {
+    case .symbol(let symbol):
+        let k = diameter * 1.62
+        drawSymbol(symbol, map: { NSPoint(x: center.x + ($0 - 0.5) * k, y: center.y + ($1 - 0.5) * k) },
+                   scale: k, ink: inkColor, background: .white)
+    case .letter(let letter):
+        drawLetter(letter, center: center, height: diameter * 0.56, color: inkColor)
+    case .none:
+        break
     }
-    let base = palette[idx]
-    let spec = ProfileIcon(
-        name: "custom",
-        kind: .letter(letter),
-        red: base.red,
-        green: base.green,
-        blue: base.blue
-    )
-    let outputURL = URL(fileURLWithPath: output).standardizedFileURL
-    let workDir = outputURL.deletingLastPathComponent()
+}
+
+func appIcon(_ path: String, size: Int) -> NSBitmapImageRep {
+    guard FileManager.default.fileExists(atPath: path) else { fail("app not found: \(path)") }
+    let icon = NSWorkspace.shared.icon(forFile: path)
+    return canvas(size) { dim in
+        icon.draw(in: NSRect(x: 0, y: 0, width: dim, height: dim), from: .zero, operation: .sourceOver, fraction: 1)
+    }
+}
+
+/// Writes a layered Icon Composer file and compiles it with actool. macOS 26 draws the
+/// Default, Dark, Clear and Tinted styles from the layers. Needs Xcode 26; returns false otherwise.
+func buildAssetsCar(foreground: NSBitmapImageRep, fill: RGB, output: URL) -> Bool {
+    guard run("/usr/bin/xcrun", ["--find", "actool"]) else { return false }
+    let work = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: work) }
+    let bundle = work.appendingPathComponent("AppIcon.icon")
+    let assets = bundle.appendingPathComponent("Assets")
+    let compiled = work.appendingPathComponent("compiled")
+    let json = """
+    {
+      "fill" : { "solid" : "srgb:\(String(format: "%.5f,%.5f,%.5f", fill.r, fill.g, fill.b)),1.00000" },
+      "groups" : [ { "layers" : [ { "image-name" : "foreground.png", "name" : "foreground" } ] } ],
+      "supported-platforms" : { "squares" : "shared" }
+    }
+    """
     do {
-        try buildIcns(spec: spec, outputPath: outputURL, workDir: workDir)
+        try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: compiled, withIntermediateDirectories: true)
+        try pngData(foreground).write(to: assets.appendingPathComponent("foreground.png"))
+        try json.write(to: bundle.appendingPathComponent("icon.json"), atomically: true, encoding: .utf8)
     } catch {
-        fputs("\(error.localizedDescription)\n", stderr)
-        exit(1)
+        return false
     }
+    let ok = run("/usr/bin/xcrun", [
+        "actool", bundle.path, "--compile", compiled.path, "--platform", "macosx",
+        "--minimum-deployment-target", "11.0", "--app-icon", "AppIcon", "--include-all-app-icons",
+        "--output-partial-info-plist", work.appendingPathComponent("partial.plist").path,
+    ])
+    let car = compiled.appendingPathComponent("Assets.car")
+    guard ok, FileManager.default.fileExists(atPath: car.path) else { return false }
+    try? FileManager.default.removeItem(at: output)
+    return (try? FileManager.default.copyItem(at: car, to: output)) != nil
+}
+
+func renderAppIcon(app: String, color: RGB, badge: Badge, output: URL, assetsCar: URL?) {
+    let size = 1024
+    let master = appIcon(app, size: size)
+    let px = Pixels(master)
+    let weights = recolor(px, to: color)
+    let bounds = opaqueBounds(px)
+    let image = NSImage(size: NSSize(width: size, height: size))
+    image.addRepresentation(master)
+
+    writeIcns(to: output) { dim in
+        image.draw(in: NSRect(x: 0, y: 0, width: dim, height: dim), from: .zero, operation: .sourceOver, fraction: 1)
+        let scale = dim / CGFloat(size)
+        let scaled = NSRect(x: bounds.minX * scale, y: bounds.minY * scale,
+                            width: bounds.width * scale, height: bounds.height * scale)
+        drawBadge(badge, color: color, in: scaled, canvasSize: dim)
+    }
+
+    guard let assetsCar = assetsCar else { return }
+    // Layered version: the brand-colored parts and the badge become the foreground, cropped
+    // to the icon's own bounds because Icon Composer artwork fills the whole canvas.
+    var fill = (r: 0.0, g: 0.0, b: 0.0, n: 0.0)
+    for i in 0..<px.count where weights[i] < 0.05 {
+        let p = px.get(i)
+        guard p.a > 0.9 else { continue }
+        fill = (fill.r + p.r, fill.g + p.g, fill.b + p.b, fill.n + 1)
+    }
+    let background = fill.n > 0 ? RGB(r: fill.r / fill.n, g: fill.g / fill.n, b: fill.b / fill.n) : color
+    for i in 0..<px.count {
+        let p = px.get(i)
+        px.set(i, p.r, p.g, p.b, p.a * weights[i])
+    }
+    let layer = NSImage(size: NSSize(width: size, height: size))
+    layer.addRepresentation(master)
+    let foreground = canvas(size) { dim in
+        let k = dim / bounds.width
+        layer.draw(in: NSRect(x: -bounds.minX * k, y: -bounds.minY * k, width: CGFloat(size) * k, height: CGFloat(size) * k),
+                   from: .zero, operation: .sourceOver, fraction: 1)
+        drawBadge(badge, color: color, in: NSRect(x: 0, y: 0, width: dim, height: dim), canvasSize: dim)
+    }
+    if !buildAssetsCar(foreground: foreground, fill: background, output: assetsCar) {
+        fputs("generate_icons: skipped the layered icon (needs Xcode 26's actool)\n", stderr)
+    }
+}
+
+// MARK: - Command line
+
+var options: [String: String] = [:]
+var flags = Set<String>()
+var index = 1
+let args = CommandLine.arguments
+while index < args.count {
+    let arg = args[index]
+    if arg == "--no-badge" {
+        flags.insert(arg)
+        index += 1
+    } else if arg.hasPrefix("--"), index + 1 < args.count {
+        options[arg] = args[index + 1]
+        index += 2
+    } else {
+        fail("unexpected argument: \(arg)")
+    }
+}
+
+let here = URL(fileURLWithPath: args[0]).standardizedFileURL.deletingLastPathComponent()
+let file = loadSymbols(options["--symbols"].map { URL(fileURLWithPath: $0) } ?? here.appendingPathComponent("glyphs.json"))
+
+func symbolNamed(_ name: String) -> Symbol {
+    guard let symbol = file.symbols.first(where: { $0.name == name.lowercased() }) else { fail("unknown symbol: \(name)") }
+    return symbol
+}
+
+func paletteColor(_ index: Int) -> RGB {
+    guard file.palette.indices.contains(index), let color = namedColor(file.palette[index], in: file) else {
+        fail("palette index out of range: \(index)")
+    }
+    return color
+}
+
+if let app = options["--app"] {
+    guard let output = options["--output"] else { fail("--output is required") }
+    var badge = Badge.none
+    var color: RGB?
+    if let name = options["--symbol"] {
+        let symbol = symbolNamed(name)
+        badge = .symbol(symbol)
+        color = namedColor(symbol.color, in: file)
+    } else if let letter = options["--letter"] {
+        badge = .letter(letter)
+    }
+    if flags.contains("--no-badge") { badge = .none }
+    if let value = options["--color"] {
+        guard let parsed = parseColor(value, in: file) else { fail("unknown color: \(value)") }
+        color = parsed
+    }
+    guard let target = color else { fail("--color is required with --letter or --no-badge") }
+    renderAppIcon(app: app, color: target, badge: badge, output: URL(fileURLWithPath: output),
+                  assetsCar: options["--assets-car"].map { URL(fileURLWithPath: $0) })
     exit(0)
 }
 
-let iconsDir = repoIconsDir()
-let fileManager = FileManager.default
-
-var allIcons = palette
-do {
-    let data = try Data(contentsOf: iconsDir.appendingPathComponent("glyphs.json"))
-    for glyph in try JSONDecoder().decode(GlyphFile.self, from: data).icons {
-        allIcons.append(ProfileIcon(
-            name: glyph.name,
-            kind: .glyph(glyph),
-            red: CGFloat(glyph.color[0]),
-            green: CGFloat(glyph.color[1]),
-            blue: CGFloat(glyph.color[2])
-        ))
-    }
-} catch {
-    fputs("glyphs.json: \(error.localizedDescription)\n", stderr)
-    exit(1)
+if let indexValue = options["--index"], let letter = options["--letter"], let output = options["--output"] {
+    guard let paletteIndex = Int(indexValue) else { fail("bad --index: \(indexValue)") }
+    let color = paletteColor(paletteIndex)
+    writeIcns(to: URL(fileURLWithPath: output)) { drawFlat(dim: $0, color: color, symbol: nil, letter: letter) }
+    exit(0)
 }
 
-for spec in allIcons {
-    let icnsPath = iconsDir.appendingPathComponent("\(spec.name).icns")
-    do {
-        try buildIcns(spec: spec, outputPath: icnsPath, workDir: iconsDir)
-        print("Created \(icnsPath.lastPathComponent)")
-    } catch {
-        fputs("\(error.localizedDescription)\n", stderr)
-        exit(1)
-    }
+// No arguments: regenerate the flat icons shipped in icons/.
+for i in file.palette.indices {
+    let symbol: Symbol? = i == 0 ? symbolNamed("work") : (i == 1 ? symbolNamed("personal") : nil)
+    let color = paletteColor(i)
+    writeIcns(to: here.appendingPathComponent("profile-\(i).icns")) { drawFlat(dim: $0, color: color, symbol: symbol, letter: nil) }
+    print("Created profile-\(i).icns")
+}
+for symbol in file.symbols where symbol.name != "work" && symbol.name != "personal" {
+    guard let color = namedColor(symbol.color, in: file) else { fail("unknown color for \(symbol.name)") }
+    writeIcns(to: here.appendingPathComponent("\(symbol.name).icns")) { drawFlat(dim: $0, color: color, symbol: symbol, letter: nil) }
+    print("Created \(symbol.name).icns")
 }

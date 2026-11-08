@@ -492,21 +492,24 @@ test_profile_icon_assignment_deterministic() {
 }
 
 test_custom_profile_icons_have_letter_badge() {
-  test_start "custom profile icons differ from palette-only icons"
+  test_start "launcher icons are drawn from Claude's icon with each profile's badge and color"
   setup_sandbox
   create_mock_claude >/dev/null
+  install_fake_icon_tool
   capture_script create Work Personal DRD ClientA >/dev/null
-  local drd_hash client_hash work_hash personal_hash drd_idx palette_hash
-  drd_hash="$(shasum -a 256 "$HOME/Applications/Claude DRD.app/Contents/Resources/applet.icns" | awk '{print $1}')"
-  client_hash="$(shasum -a 256 "$HOME/Applications/Claude ClientA.app/Contents/Resources/applet.icns" | awk '{print $1}')"
-  work_hash="$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')"
-  personal_hash="$(shasum -a 256 "$HOME/Applications/Claude Personal.app/Contents/Resources/applet.icns" | awk '{print $1}')"
-  drd_idx="$(profile_icon_index_via_script "DRD")"
-  palette_hash="$(shasum -a 256 "$REPO_ROOT/icons/profile-${drd_idx}.icns" | awk '{print $1}')"
-  assert_ne "$drd_hash" "$palette_hash" "DRD icon is generated with letter badge"
-  assert_ne "$drd_hash" "$work_hash" "DRD icon differs from Work"
-  assert_ne "$drd_hash" "$personal_hash" "DRD icon differs from Personal"
-  assert_ne "$drd_hash" "$client_hash" "DRD and ClientA icons differ"
+  local apps="$HOME/Applications"
+  assert_eq "icon --symbol work" "$(cat "$apps/Claude Work.app/Contents/Resources/applet.icns")" "Work: briefcase, its own color"
+  assert_eq "icon --symbol personal" "$(cat "$apps/Claude Personal.app/Contents/Resources/applet.icns")" "Personal: person"
+  assert_eq "icon --letter D --color coral" "$(cat "$apps/Claude DRD.app/Contents/Resources/applet.icns")" "DRD: letter in its palette color"
+  assert_eq "icon --letter C --color pink" "$(cat "$apps/Claude ClientA.app/Contents/Resources/applet.icns")" "ClientA: letter in its palette color"
+  local marker
+  marker="$(cat "$apps/Claude DRD.app/Contents/Resources/claude-fix-generated")"
+  assert_contains "$marker" "icon-args=--letter D --color coral" "marker remembers how to redraw the icon"
+  assert_contains "$marker" "icon-tool=$CLAUDE_LAUNCHERS_ICON_TOOL" "marker records the icon tool"
+  assert_contains "$marker" "claude-icon-stamp=" "marker records Claude's icon fingerprint"
+  assert_file_exists "$apps/Claude DRD.app/Contents/Resources/Assets.car" "layered icon kept"
+  assert_eq "AppIcon" "$(plutil -extract CFBundleIconName raw -o - "$apps/Claude DRD.app/Contents/Info.plist")" \
+    "Info.plist points at the layered icon"
   teardown_sandbox
 }
 
@@ -890,7 +893,7 @@ test_icons_download_to_cache() {
   create_mock_claude >/dev/null
   mkdir -p "$SANDBOX/icon-src"
   cp "$REPO_ROOT/icons/"*.icns "$SANDBOX/icon-src/"
-  cp "$REPO_ROOT/icons/generate_icons.swift" "$SANDBOX/icon-src/"
+  cp "$REPO_ROOT/icons/generate_icons.swift" "$REPO_ROOT/icons/glyphs.json" "$SANDBOX/icon-src/"
   # Simulate curl | bash: run a copy of the script with no sibling icons/ folder.
   cp "$SCRIPT" "$SANDBOX/make_claude_launchers.sh"
   local saved_script="$SCRIPT"
@@ -1467,6 +1470,91 @@ test_review_regressions() {
   teardown_sandbox
 }
 
+test_icon_choices_symbol_color_letter() {
+  test_start "icon command sets symbol, color, letter and hex independently"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  install_fake_icon_tool
+  capture_script create ClientA >/dev/null
+  local icon="$HOME/Applications/Claude ClientA.app/Contents/Resources/applet.icns"
+  local conf="$HOME/.claude-fix/custom-icons/ClaudeClientA.conf"
+  capture_script icon ClientA home teal >/dev/null
+  assert_eq "icon --symbol home --color teal" "$(cat "$icon")" "symbol and color"
+  capture_script icon ClientA x >/dev/null
+  assert_eq "icon --letter X --color teal" "$(cat "$icon")" "letter keeps the chosen color"
+  capture_script icon ClientA "#3366FF" >/dev/null
+  assert_eq "icon --letter X --color #3366ff" "$(cat "$icon")" "hex color"
+  capture_script icon ClientA none >/dev/null
+  assert_eq "icon --no-badge --color #3366ff" "$(cat "$icon")" "no badge"
+  capture_script icon ClientA Moon >/dev/null
+  assert_eq "icon --symbol moon --color #3366ff" "$(cat "$icon")" "names are case-insensitive"
+  capture_script icon ClientA default >/dev/null
+  assert_file_missing "$conf" "default clears the choice"
+  assert_eq "icon --letter C --color pink" "$(cat "$icon")" "back to the default"
+  local out code
+  set +e
+  out="$(capture_script icon ClientA "#12345" 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "bad hex rejected"
+  assert_contains "$out" "#RRGGBB" "usage lists colors"
+  teardown_sandbox
+}
+
+test_icon_refreshes_after_claude_update() {
+  test_start "launcher redraws its icon when Claude's icon changes"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  install_fake_icon_tool
+  capture_script create Work >/dev/null
+  local helper="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh"
+  local marker="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated"
+  : >"$FAKE_ICON_LOG"
+  bash "$helper" icon-refresh
+  assert_eq "" "$(cat "$FAKE_ICON_LOG")" "no redraw while Claude's icon is unchanged"
+  local before
+  before="$(grep '^claude-icon-stamp=' "$marker")"
+  printf 'new-claude-icon\n' >"$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns"
+  bash "$helper" icon-refresh
+  assert_eq "--symbol work" "$(cat "$FAKE_ICON_LOG")" "redraws after Claude's icon changes"
+  assert_ne "$before" "$(grep '^claude-icon-stamp=' "$marker")" "fingerprint updated"
+  assert_eq "1" "$(grep -c '^claude-icon-stamp=' "$marker")" "fingerprint stored once"
+  : >"$FAKE_ICON_LOG"
+  bash "$helper" icon-refresh
+  assert_eq "" "$(cat "$FAKE_ICON_LOG")" "no redraw once caught up"
+  teardown_sandbox
+}
+
+test_icon_without_tool_notes_requirement() {
+  test_start "custom colors without the icon tool fall back and say why"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local out
+  out="$(capture_script icon Work teal 2>&1)"
+  assert_contains "$out" "Command Line Tools" "explains what's needed"
+  assert_eq "$(shasum -a 256 "$REPO_ROOT/icons/profile-0.icns" | awk '{print $1}')" \
+    "$(shasum -a 256 "$HOME/Applications/Claude Work.app/Contents/Resources/applet.icns" | awk '{print $1}')" \
+    "simple Work icon used"
+  teardown_sandbox
+}
+
+test_icon_names_match_glyphs_json() {
+  test_start "the script's symbol and color names match icons/glyphs.json"
+  setup_sandbox
+  local json="$REPO_ROOT/icons/glyphs.json" names name
+  names="$(bash -c 'source "$1"; printf "%s|%s" "$SYMBOL_NAMES" "$COLOR_NAMES"' _ "$SCRIPT")"
+  for name in ${names%%|*}; do
+    assert_true "symbol $name is defined" grep -q "\"name\": \"$name\"" "$json"
+  done
+  for name in ${names#*|}; do
+    assert_true "color $name is defined" grep -q "\"$name\": \[" "$json"
+  done
+  assert_eq "$(grep -c '"name": ' "$json")" "$(printf '%s' "${names%%|*}" | wc -w | tr -d ' ')" \
+    "no symbol is missing from the script"
+  teardown_sandbox
+}
+
 test_script_syntax() {
   test_start "script passes bash -n syntax check"
   bash -n "$SCRIPT"
@@ -1570,6 +1658,10 @@ main() {
   test_desktop_shortcut_is_symlink_and_cleaned
   test_reserved_profiles_label_and_version
   test_review_regressions
+  test_icon_choices_symbol_color_letter
+  test_icon_refreshes_after_claude_update
+  test_icon_without_tool_notes_requirement
+  test_icon_names_match_glyphs_json
 
   print_summary
 }

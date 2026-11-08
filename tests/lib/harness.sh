@@ -143,7 +143,8 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
     CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
-    CLAUDE_LAUNCHERS_ICON_ANSWER 2>/dev/null || true
+    CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
+    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -164,7 +165,8 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_ICONS_CACHE CLAUDE_LAUNCHERS_ICONS_BASE \
     CLAUDE_LAUNCHERS_ALLOW_ICON_DOWNLOAD CLAUDE_LAUNCHERS_NO_ICON_DOWNLOAD \
     CLAUDE_LAUNCHERS_UPGRADE_ANSWER CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
-    CLAUDE_LAUNCHERS_ICON_ANSWER MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
+    CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
+    CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
 # Minimal fake Claude.app with an icon resource.
@@ -269,6 +271,33 @@ create_real_claude_stub() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   touch "$app/Contents/MacOS/Claude"
   touch "$app/Contents/Resources/AppIcon.icns"
+}
+
+# Stand-in for the compiled icon tool: writes its badge/color arguments into the icon so
+# tests can see what was asked for, and logs each call.
+install_fake_icon_tool() {
+  local tool="$SANDBOX/fake-icon-tool"
+  cat >"$tool" <<'TOOL'
+#!/bin/bash
+out=""
+car=""
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) out="$2"; shift 2 ;;
+    --assets-car) car="$2"; shift 2 ;;
+    --app) shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+printf 'icon %s\n' "${args[*]}" >"$out"
+[ -n "$car" ] && printf 'car\n' >"$car"
+printf '%s\n' "${args[*]}" >>"$FAKE_ICON_LOG"
+TOOL
+  chmod +x "$tool"
+  export FAKE_ICON_LOG="$SANDBOX/icon-tool.log"
+  : >"$FAKE_ICON_LOG"
+  export CLAUDE_LAUNCHERS_ICON_TOOL="$tool"
 }
 
 run_script() {

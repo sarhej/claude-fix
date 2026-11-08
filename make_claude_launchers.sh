@@ -23,8 +23,14 @@ LAUNCH_SCRIPT_REL="Contents/Resources/claude-fix.sh"
 # v5: shared runtime helper, reopen via Apple event, signed bundles, profile picker
 LAUNCHER_VERSION=5
 ICON_COUNT=8
-# Built-in icons anyone can pick with `icon <profile> <name>`. work/personal are profile-0/1.
-BUILTIN_ICONS="work personal home code star heart book globe bolt leaf moon chat"
+# Badge symbols and colors for `icon`; these match icons/glyphs.json.
+SYMBOL_NAMES="work personal home code star heart book globe bolt leaf moon chat"
+COLOR_NAMES="indigo sage orange purple teal pink coral slate amber graphite gold red brown ocean violet green navy sky clay"
+PALETTE_NAMES="indigo sage orange purple teal pink coral slate"
+ICON_TOOL=""
+ICON_TOOL_CHECKED=0
+ICON_ARGS=""
+ICON_ASSET_NAME=""
 BUNDLE_ID_PREFIX="com.github.sarhej.claude-fix"
 CLAUDE_BUNDLE_ID="com.anthropic.claudefordesktop"
 PICKER_NAME="Claude Profiles"
@@ -54,7 +60,7 @@ icons_cache_ready() {
   local cache
   cache=$(icons_cache_dir)
   [ -f "$cache/profile-0.icns" ] && [ -f "$cache/profile-1.icns" ] && [ -f "$cache/chat.icns" ] &&
-    [ -f "$cache/generate_icons.swift" ]
+    [ -f "$cache/generate_icons.swift" ] && [ -f "$cache/glyphs.json" ]
 }
 
 icon_download_disabled() {
@@ -74,15 +80,17 @@ download_icons_to_cache() {
       curl -fsSL "${base}/${name}" -o "$cache/$name" || return 1
     fi
   done
-  for name in $BUILTIN_ICONS; do
+  for name in $SYMBOL_NAMES; do
     case "$name" in work|personal) continue ;; esac
     if [ ! -f "$cache/$name.icns" ]; then
       curl -fsSL "${base}/${name}.icns" -o "$cache/$name.icns" || return 1
     fi
   done
-  if [ ! -f "$cache/generate_icons.swift" ]; then
-    curl -fsSL "${base}/generate_icons.swift" -o "$cache/generate_icons.swift" || return 1
-  fi
+  for name in generate_icons.swift glyphs.json; do
+    if [ ! -f "$cache/$name" ]; then
+      curl -fsSL "${base}/${name}" -o "$cache/$name" || return 1
+    fi
+  done
   return 0
 }
 
@@ -172,7 +180,11 @@ custom_icon_path() {
   printf '%s/custom-icons/%s.icns' "$STATE_DIR" "$(slug "$1")"
 }
 
-# /usr/bin/python3 and /usr/bin/swift are stubs that pop an installer dialog
+icon_choice_file() {
+  printf '%s/custom-icons/%s.conf' "$STATE_DIR" "$(slug "$1")"
+}
+
+# /usr/bin/python3, swift and swiftc are stubs that pop an installer dialog
 # until the Command Line Tools are installed, so check before calling them.
 dev_tool_ready() {
   local path
@@ -183,60 +195,150 @@ dev_tool_ready() {
   esac
 }
 
-generate_profile_icon() {
-  local label="$1" output="$2"
-  local dir idx letter script icon_path custom
-  custom=$(custom_icon_path "$label")
-  if [ -f "$custom" ]; then
-    cp "$custom" "$output"
+word_in() {
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# Finds (and on first use compiles) the icon tool that recolors Claude's own icon.
+# Sets ICON_TOOL; without the Command Line Tools it stays empty and flat icons are used.
+resolve_icon_tool() {
+  local dir src dest sum
+  if [ "$ICON_TOOL_CHECKED" = "1" ]; then
+    [ -n "$ICON_TOOL" ] && return 0
+    return 1
+  fi
+  ICON_TOOL_CHECKED=1
+  ICON_TOOL=""
+  if [ -n "${CLAUDE_LAUNCHERS_ICON_TOOL:-}" ]; then
+    [ -x "$CLAUDE_LAUNCHERS_ICON_TOOL" ] || return 1
+    ICON_TOOL="$CLAUDE_LAUNCHERS_ICON_TOOL"
     return 0
   fi
-  case "$label" in
-    Work|Personal)
-      if icon_path=$(profile_icon_path "$label"); then
-        cp "$icon_path" "$output"
-        return 0
-      fi
-      return 1
-      ;;
-    *)
-      if ! dir=$(icons_dir); then
-        return 1
-      fi
-      script="$dir/generate_icons.swift"
-      if [ ! -f "$script" ]; then
-        return 1
-      fi
-      idx=$(profile_icon_index "$label")
-      letter=$(profile_icon_letter "$label")
-      if dev_tool_ready swift &&
-        swift "$script" --index "$idx" --letter "$letter" --output "$output" >/dev/null 2>&1; then
-        return 0
-      fi
-      # No letter badge without swift, but the profile's color still beats the applet icon.
-      if [ -f "$dir/profile-${idx}.icns" ]; then
-        cp "$dir/profile-${idx}.icns" "$output"
-        return 0
-      fi
-      return 1
-      ;;
+  [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && return 1
+  dir=$(icons_dir 2>/dev/null) || return 1
+  src="$dir/generate_icons.swift"
+  [ -f "$src" ] && [ -f "$dir/glyphs.json" ] || return 1
+  dest="$STATE_DIR/icon-tool"
+  sum=$(cat "$src" "$dir/glyphs.json" | cksum | awk '{print $1}')
+  if [ -x "$dest/generate_icons" ] && [ "$(cat "$dest/source.sum" 2>/dev/null)" = "$sum" ]; then
+    ICON_TOOL="$dest/generate_icons"
+    return 0
+  fi
+  dev_tool_ready swiftc || return 1
+  mkdir -p "$dest"
+  echo "Building the icon tool (first run only, about a minute)..."
+  if swiftc -O -o "$dest/generate_icons.new" "$src" >/dev/null 2>&1; then
+    mv "$dest/generate_icons.new" "$dest/generate_icons"
+    cp "$dir/glyphs.json" "$dest/glyphs.json"
+    printf '%s\n' "$sum" >"$dest/source.sum"
+    ICON_TOOL="$dest/generate_icons"
+    return 0
+  fi
+  rm -f "$dest/generate_icons.new"
+  echo "NOTE: could not build the icon tool; using simple icons." >&2
+  return 1
+}
+
+default_icon_color() {
+  case "$1" in
+    Work) printf 'indigo' ;;
+    Personal) printf 'sage' ;;
+    *) printf '%s' "$PALETTE_NAMES" | awk -v i="$(($(profile_icon_index "$1") + 1))" '{print $i}' ;;
   esac
 }
 
-# Path of a built-in icon by name (case-insensitive), or nothing.
-builtin_icon_path() {
-  local want dir name
-  want=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  dir=$(icons_dir 2>/dev/null) || return 1
-  for name in $BUILTIN_ICONS; do
-    [ "$name" = "$want" ] || continue
-    case "$name" in
-      work) name="profile-0" ;;
-      personal) name="profile-1" ;;
+# Arguments for the icon tool: the saved symbol and color, else the profile's defaults.
+icon_tool_args() {
+  local label="$1" conf symbol color args
+  conf=$(icon_choice_file "$label")
+  symbol=$(marker_value "$conf" "symbol")
+  color=$(marker_value "$conf" "color")
+  if [ -z "$symbol" ]; then
+    case "$label" in
+      Work) symbol="work" ;;
+      Personal) symbol="personal" ;;
+      *) symbol="letter:$(profile_icon_letter "$label")" ;;
     esac
-    [ -f "$dir/$name.icns" ] && { printf '%s' "$dir/$name.icns"; return 0; }
-  done
-  return 1
+  fi
+  case "$symbol" in
+    none) args="--no-badge" ;;
+    letter:*) args="--letter ${symbol#letter:}" ;;
+    *) args="--symbol $symbol" ;;
+  esac
+  case "$symbol" in
+    none|letter:*) [ -n "$color" ] || color=$(default_icon_color "$label") ;;
+  esac
+  [ -n "$color" ] && args="$args --color $color"
+  printf '%s' "$args"
+}
+
+# Fingerprint of Claude's icon and the macOS version, so launchers redraw their icon
+# when either changes. The runtime helper computes the same thing.
+claude_icon_stamp() {
+  local app="$1" icns
+  icns=$(claude_icon_file "$app" 2>/dev/null || true)
+  {
+    sw_vers -productVersion 2>/dev/null || true
+    cat "$app/Contents/Resources/Assets.car" ${icns:+"$icns"} 2>/dev/null || true
+  } | cksum | awk '{print $1}'
+}
+
+# Claude's own icon, including its asset catalog so every macOS icon style works.
+copy_claude_icon() {
+  local res="$1" src name
+  name=$(plutil -extract CFBundleIconName raw -o - "$CLAUDE_APP/Contents/Info.plist" 2>/dev/null || true)
+  if [ -n "$name" ] && [ -f "$CLAUDE_APP/Contents/Resources/Assets.car" ]; then
+    cp "$CLAUDE_APP/Contents/Resources/Assets.car" "$res/Assets.car"
+    ICON_ASSET_NAME="$name"
+  fi
+  if src=$(claude_icon_file "$CLAUDE_APP"); then
+    cp "$src" "$res/applet.icns"
+  fi
+}
+
+# Bundled flat icon for a symbol, or the profile's palette color.
+flat_profile_icon() {
+  local label="$1" symbol="$2" out="$3" dir path
+  dir=$(icons_dir 2>/dev/null) || return 1
+  case "$symbol" in
+    ""|none|letter:*) path="$dir/profile-$(profile_icon_index "$label").icns" ;;
+    work) path="$dir/profile-0.icns" ;;
+    personal) path="$dir/profile-1.icns" ;;
+    *) path="$dir/$symbol.icns" ;;
+  esac
+  [ -f "$path" ] && cp "$path" "$out"
+}
+
+# Writes applet.icns (and Assets.car when available) into a bundle's Resources.
+# Sets ICON_ARGS when the icon was drawn from Claude's own icon, so it can be redrawn later.
+generate_profile_icon() {
+  local label="$1" res="$2" custom symbol args
+  ICON_ARGS=""
+  ICON_ASSET_NAME=""
+  rm -f "$res/Assets.car"
+  custom=$(custom_icon_path "$label")
+  if [ -f "$custom" ]; then
+    cp "$custom" "$res/applet.icns"
+    return 0
+  fi
+  symbol=$(marker_value "$(icon_choice_file "$label")" "symbol")
+  if [ "$symbol" = "claude" ]; then
+    copy_claude_icon "$res"
+    return 0
+  fi
+  args=$(icon_tool_args "$label")
+  if resolve_icon_tool; then
+    # shellcheck disable=SC2086 # args are single words
+    if "$ICON_TOOL" --app "$CLAUDE_APP" $args --output "$res/applet.icns" \
+      --assets-car "$res/Assets.car" >/dev/null 2>&1; then
+      ICON_ARGS="$args"
+      [ -f "$res/Assets.car" ] && ICON_ASSET_NAME="AppIcon"
+      return 0
+    fi
+    rm -f "$res/Assets.car"
+  fi
+  flat_profile_icon "$label" "$symbol" "$res/applet.icns"
 }
 
 # Convert any image sips can read into a multi-resolution .icns, center-cropped to a square.
@@ -1164,8 +1266,10 @@ make_claude_launchers.sh - manage isolated Claude Desktop profiles
 
 Commands:
   create [options] [labels...]   Create one launcher per label
-  icon <label> <icon>  Change a launcher's icon. <icon> is a built-in name
-                       ($BUILTIN_ICONS),
+  icon <label> <choice>...
+                       Change a launcher's icon: Claude's icon in a color, with a
+                       symbol badge. Choices are a symbol ($SYMBOL_NAMES,
+                       a letter, none), a color ($COLOR_NAMES, #RRGGBB),
                        an image file, claude (Claude's own icon), or default
   upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
@@ -1197,8 +1301,8 @@ Examples:
   ./make_claude_launchers.sh create --desktop --launch Personal
   ./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
   ./make_claude_launchers.sh icon Work ~/Pictures/work.png
-  ./make_claude_launchers.sh icon Personal home
-  ./make_claude_launchers.sh icon Clients claude
+  ./make_claude_launchers.sh icon Personal home teal
+  ./make_claude_launchers.sh icon Clients C "#3366ff"
   ./make_claude_launchers.sh upgrade
   ./make_claude_launchers.sh clean --purge
 
@@ -1289,6 +1393,7 @@ write_runtime_helper() {
 #   open NAME [URL]     open a profile by name, handing it URL if given
 #   claim [BUNDLE_ID]   make BUNDLE_ID (default: the picker) handle claude:// links
 #   claim-burst         claim repeatedly while a newly launched Claude grabs the scheme
+#   icon-refresh        redraw this launcher's icon if Claude's icon or macOS changed
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1386,6 +1491,67 @@ cmd_open() {
   claim_later
 }
 
+claude_icon_stamp() {
+  local app="$1" name icns=""
+  name=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
+  if [ -n "$name" ]; then
+    case "$name" in *.icns) ;; *) name="$name.icns" ;; esac
+    [ -f "$app/Contents/Resources/$name" ] && icns="$app/Contents/Resources/$name"
+  fi
+  if [ -z "$icns" ]; then
+    for name in "$app/Contents/Resources/"*.icns; do
+      [ -f "$name" ] && { icns="$name"; break; }
+    done
+  fi
+  {
+    sw_vers -productVersion 2>/dev/null || true
+    cat "$app/Contents/Resources/Assets.car" ${icns:+"$icns"} 2>/dev/null || true
+  } | cksum | awk '{print $1}'
+}
+
+# Launcher icons are drawn from Claude's own icon. When Claude or macOS changes it, draw
+# them again, so a launcher never shows a stale icon after an update.
+cmd_icon_refresh() {
+  local tool args app stamp bundle tmp lock="$STATE_DIR/icon-refresh.lock"
+  tool=$(marker_value "$MARKER" icon-tool)
+  args=$(marker_value "$MARKER" icon-args)
+  [ -n "$args" ] && [ -x "$tool" ] || return 0
+  app=$(claude_app 2>/dev/null) || return 0
+  stamp=$(claude_icon_stamp "$app")
+  [ "$stamp" = "$(marker_value "$MARKER" claude-icon-stamp)" ] && return 0
+  mkdir -p "$STATE_DIR"
+  # A lock left behind by a refresh that died must not block refreshes forever.
+  find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
+  mkdir "$lock" 2>/dev/null || return 0
+  bundle=$(cd "$HERE/../.." && pwd)
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/claude-fix-icon.XXXXXX")
+  # shellcheck disable=SC2086 # icon-args holds single words
+  if "$tool" --app "$app" $args --output "$tmp/applet.icns" --assets-car "$tmp/Assets.car" >/dev/null 2>&1; then
+    cp "$tmp/applet.icns" "$HERE/applet.icns"
+    if [ -f "$tmp/Assets.car" ]; then
+      cp "$tmp/Assets.car" "$HERE/Assets.car"
+      plutil -replace CFBundleIconName -string AppIcon "$bundle/Contents/Info.plist" >/dev/null 2>&1
+    else
+      rm -f "$HERE/Assets.car"
+      plutil -remove CFBundleIconName "$bundle/Contents/Info.plist" >/dev/null 2>&1
+    fi
+    awk -v stamp="$stamp" -F= '
+      $1 == "claude-icon-stamp" { print "claude-icon-stamp=" stamp; found = 1; next }
+      { print }
+      END { if (!found) print "claude-icon-stamp=" stamp }' "$MARKER" >"$tmp/marker" &&
+      cat "$tmp/marker" >"$MARKER"
+    codesign --force --sign - "$bundle" >/dev/null 2>&1
+    touch "$bundle"
+    if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+      /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -f "$bundle" >/dev/null 2>&1
+    fi
+  fi
+  rm -rf "$tmp"
+  rmdir "$lock" 2>/dev/null
+  return 0
+}
+
 cmd_list() {
   local app marker
   echo "Claude"
@@ -1408,8 +1574,12 @@ cmd_claim() {
 case "${1:-}" in
   launch)
     label=$(marker_value "$MARKER" label)
-    cmd_open "Claude $label"
+    cmd_open "Claude $label" || exit 1
+    if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+      nohup /bin/bash "$HERE/claude-fix.sh" icon-refresh >/dev/null 2>&1 &
+    fi
     ;;
+  icon-refresh) cmd_icon_refresh ;;
   list) cmd_list ;;
   last) cat "$STATE_DIR/last-profile" 2>/dev/null || true ;;
   open) shift; cmd_open "$@" ;;
@@ -1422,7 +1592,7 @@ case "${1:-}" in
     done
     ;;
   *)
-    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]" >&2
+    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh" >&2
     exit 2
     ;;
 esac
@@ -1485,9 +1655,13 @@ finalize_bundle() {
   plist_set "$plist" CFBundleIdentifier -string "$bundle_id"
   plist_set "$plist" NSAppleEventsUsageDescription -string "$usage"
   plist_set "$plist" CFBundleIconFile -string "applet"
-  # Without Assets.car this key points at nothing, and newer macOS shows a blank icon.
-  plutil -remove CFBundleIconName "$plist" >/dev/null 2>&1 || true
-  rm -f "$app/Contents/Resources/Assets.car"
+  # CFBundleIconName must name an icon in Assets.car; pointing it at nothing blanks the icon.
+  if [ -n "$ICON_ASSET_NAME" ] && [ -f "$app/Contents/Resources/Assets.car" ]; then
+    plist_set "$plist" CFBundleIconName -string "$ICON_ASSET_NAME"
+  else
+    plutil -remove CFBundleIconName "$plist" >/dev/null 2>&1 || true
+    rm -f "$app/Contents/Resources/Assets.car"
+  fi
   xattr -cr "$app" 2>/dev/null || true
   if ! codesign --force --sign - "$app" >/dev/null 2>&1; then
     echo "NOTE: could not sign $(basename "$app"); macOS may refuse to open it." >&2
@@ -1718,9 +1892,13 @@ make_launcher() {
   rm -rf "$app"   # only ever removes the launcher app, never the data dir
   compile_applet "$app" "$(launcher_applet_source)" || return 1
   write_runtime_helper "$app/Contents/Resources"
-  generate_profile_icon "$label" "$app/Contents/Resources/applet.icns" || true
+  generate_profile_icon "$label" "$app/Contents/Resources" || true
   printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\ndata-dir=%s\nclaude-app=%s\nlauncher-version=%s\n' \
     "$label" "$dir" "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$app/$MARKER_FILE"
+  if [ -n "$ICON_ARGS" ]; then
+    printf 'icon-tool=%s\nicon-args=%s\nclaude-icon-stamp=%s\n' \
+      "$ICON_TOOL" "$ICON_ARGS" "$(claude_icon_stamp "$CLAUDE_APP")" >>"$app/$MARKER_FILE"
+  fi
   finalize_bundle "$app" "$BUNDLE_ID_PREFIX.launcher.$(printf '%s' "$dir" | tr '[:upper:]' '[:lower:]')" \
     "Lets $name bring its Claude window to the front."
   echo "     built launcher: $app"
@@ -1742,9 +1920,9 @@ install_picker() {
   rm -rf "$PICKER_APP"
   compile_applet "$PICKER_APP" "$(picker_applet_source)" || return 1
   write_runtime_helper "$PICKER_APP/Contents/Resources"
-  if ! cp "$(claude_icon_file "$CLAUDE_APP")" "$PICKER_APP/Contents/Resources/applet.icns" 2>/dev/null; then
-    generate_profile_icon "Profiles" "$PICKER_APP/Contents/Resources/applet.icns" || true
-  fi
+  rm -f "$PICKER_APP/Contents/Resources/Assets.car"
+  ICON_ASSET_NAME=""
+  copy_claude_icon "$PICKER_APP/Contents/Resources"
   printf 'generated-by=claude-fix\nkind=picker\nclaude-app=%s\nlauncher-version=%s\n' \
     "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$PICKER_APP/$MARKER_FILE"
   plist_set "$plist" LSUIElement -bool YES
@@ -1778,16 +1956,23 @@ clean_dropped_path() {
   printf '%s' "$p"
 }
 
+icon_usage() {
+  echo "Usage: $0 icon <profile> <choice>..." >&2
+  echo "  symbol:  $SYMBOL_NAMES" >&2
+  echo "           a single letter or digit, or none" >&2
+  echo "  color:   $COLOR_NAMES, or #RRGGBB" >&2
+  echo "  also:    an image file, claude (Claude's own icon), or default" >&2
+}
+
 icon_setup() {
-  if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 icon <profile> <icon name | image file | claude | default>" >&2
-    echo "Icon names: $BUILTIN_ICONS" >&2
+  if [ "$#" -lt 2 ]; then
+    icon_usage
     exit 1
   fi
-  local label spec app custom src
+  local label app custom conf symbol color arg lower path
   label=$(trim_label "$1")
   label=${label#Claude }
-  spec="$2"
+  shift
   app="$APPS/Claude $label.app"
   if [ ! -f "$app/$MARKER_FILE" ] || [ "$(marker_value "$app/$MARKER_FILE" "kind")" = "picker" ]; then
     echo "ERROR: there's no generated launcher named Claude $label." >&2
@@ -1797,71 +1982,93 @@ icon_setup() {
   ensure_claude_app || exit 1
   ensure_icons_available >/dev/null 2>&1 || true
   custom=$(custom_icon_path "$label")
+  conf=$(icon_choice_file "$label")
   mkdir -p "$(dirname "$custom")"
+  symbol=$(marker_value "$conf" "symbol")
+  color=$(marker_value "$conf" "color")
 
-  case "$spec" in
-    default)
-      rm -f "$custom"
-      ;;
-    claude)
-      if ! src=$(claude_icon_file "$CLAUDE_APP"); then
-        echo "ERROR: couldn't find Claude's icon in $CLAUDE_APP." >&2
-        exit 1
-      fi
-      cp "$src" "$custom"
-      ;;
-    *)
-      if src=$(builtin_icon_path "$spec"); then
-        cp "$src" "$custom"
-      else
-        case "$spec" in
-          */*|*.*) ;;
-          *)
-            echo "ERROR: unknown icon \"$spec\". Use an image file, claude, default, or one of:" >&2
-            echo "       $BUILTIN_ICONS" >&2
-            exit 1
-            ;;
-        esac
-        image_to_icns "$(clean_dropped_path "$spec")" "$custom" || exit 1
-      fi
-      ;;
-  esac
+  for arg in "$@"; do
+    lower=$(printf '%s' "$arg" | tr '[:upper:]' '[:lower:]')
+    case "$lower" in
+      default)
+        symbol=""
+        color=""
+        rm -f "$custom"
+        ;;
+      claude|none)
+        symbol="$lower"
+        rm -f "$custom"
+        ;;
+      \#[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+        color="$lower"
+        ;;
+      *)
+        if word_in "$lower" "$SYMBOL_NAMES"; then
+          symbol="$lower"
+          rm -f "$custom"
+        elif word_in "$lower" "$COLOR_NAMES"; then
+          color="$lower"
+        elif [ "${#arg}" -eq 1 ] && printf '%s' "$arg" | LC_ALL=C grep -q '^[[:alnum:]]$'; then
+          symbol="letter:$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]')"
+          rm -f "$custom"
+        else
+          path=$(clean_dropped_path "$arg")
+          case "$path" in
+            */*|*.*) image_to_icns "$path" "$custom" || exit 1 ;;
+            *)
+              echo "ERROR: unknown icon choice \"$arg\"." >&2
+              icon_usage
+              exit 1
+              ;;
+          esac
+        fi
+        ;;
+    esac
+  done
+
+  if [ -n "$symbol$color" ]; then
+    printf 'symbol=%s\ncolor=%s\n' "$symbol" "$color" >"$conf"
+  else
+    rm -f "$conf"
+  fi
 
   make_launcher "$label" 0 >/dev/null || exit 1
   echo "Updated the icon for Claude $label."
+  if [ -z "$ICON_ARGS" ] && [ ! -f "$custom" ] && [ "$symbol" != "claude" ]; then
+    echo "NOTE: Claude-style icons and custom colors need the Command Line Tools" >&2
+    echo "      (run: xcode-select --install). Using a simple icon for now." >&2
+  fi
   # The Dock caches icons until it restarts.
   if dock_app_pinned_quiet "$app"; then
     dock_restart
   fi
 }
 
-dock_app_pinned_quiet() {
-  local plist
-  dock_changes_disabled && return 1
-  dev_tool_ready python3 || return 1
-  plist=$(dock_plist_path)
-  [ -f "$plist" ] && dock_app_is_pinned "$1" "$plist" >/dev/null 2>&1
-}
-
 change_icon_interactively() {
-  local idx="$1" spec
+  local idx="$1" symbol color
   local label="${GENERATED_LABELS[$idx]}"
   if [ -n "${CLAUDE_LAUNCHERS_ICON_ANSWER:-}" ]; then
-    spec="$CLAUDE_LAUNCHERS_ICON_ANSWER"
+    symbol="$CLAUDE_LAUNCHERS_ICON_ANSWER"
+    color="${CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER:-}"
   elif can_prompt; then
     echo
-    echo "Type an icon name, drag in an image, or type claude (Claude's own icon) or default."
-    echo "Icon names: $BUILTIN_ICONS"
-    prompt_read "Icon for Claude $label: " spec
+    echo "Symbols: $SYMBOL_NAMES"
+    echo "Also a single letter, none, claude (Claude's own icon), default, or drag in an image."
+    prompt_read "Symbol for Claude $label [keep]: " symbol
+    echo "Colors: $COLOR_NAMES, or #RRGGBB"
+    prompt_read "Color [keep]: " color
   else
-    echo "Run '$0 icon \"$label\" <image>' to change the icon."
+    echo "Run '$0 icon \"$label\" <symbol> <color>' to change the icon."
     return 0
   fi
-  if [ -z "$spec" ]; then
+  if [ -z "$symbol$color" ]; then
     echo "Kept the current icon."
     return 0
   fi
-  icon_setup "$label" "$spec"
+  local args=()
+  [ -n "$symbol" ] && args+=("$symbol")
+  [ -n "$color" ] && args+=("$color")
+  icon_setup "$label" "${args[@]}"
 }
 
 refresh_dock_after_start_fresh() {

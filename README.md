@@ -410,20 +410,42 @@ gives `claude://` back to Claude.
 
 ### Icons
 
-Pick a built-in icon, any image, or Claude's own icon for any profile:
+Each launcher's icon is Claude's own icon in the profile's color, with a small badge so
+you can tell profiles apart at a glance. Work gets indigo with a briefcase, Personal
+gets sage with a person, and other profiles get a color and their first letter.
+
+The icon is drawn from the Claude.app on your Mac, so nothing of Anthropic's is copied
+into this project. Its brand color is found automatically, so the recolor keeps working
+if Claude's icon changes. After a Claude or macOS update, launchers redraw their icons in
+the background the next time you open them.
+
+Change the symbol, the color, or both:
 
 ```bash
-claude-fix icon Work code
-claude-fix icon Personal ~/Pictures/me.png
-claude-fix icon "Big Client" claude
+claude-fix icon Work code teal
+claude-fix icon Personal heart
+claude-fix icon "Big Client" B "#3366ff"
+claude-fix icon Work none          # no badge
+claude-fix icon Work ~/Pictures/me.png
+claude-fix icon Work claude        # exactly Claude's icon
 claude-fix icon Work default
 ```
 
-Built-in icons: `work`, `personal`, `home`, `code`, `star`, `heart`, `book`,
-`globe`, `bolt`, `leaf`, `moon`, `chat`. Images are center-cropped to a square. Your
-choice is saved in `~/.claude-fix/custom-icons` and survives `upgrade` and start
-fresh. The menu's **Change a profile's icon** does the same, and you can drag an image
-into Terminal when it asks.
+Symbols: `work`, `personal`, `home`, `code`, `star`, `heart`, `book`, `globe`, `bolt`,
+`leaf`, `moon`, `chat`, any single letter or digit, or `none`. Colors: `indigo`,
+`sage`, `orange`, `purple`, `teal`, `pink`, `coral`, `slate`, `amber`, `graphite`,
+`gold`, `red`, `brown`, `ocean`, `violet`, `green`, `navy`, `sky`, `clay`, or any
+`#RRGGBB`. The menu's **Change a profile's icon** asks for both, and you can drag an
+image into Terminal there. Choices are saved in `~/.claude-fix/custom-icons` and
+survive `upgrade` and start fresh.
+
+On macOS 26, icons built with Xcode 26 installed come with their own Dark, Clear and
+Tinted looks, because the recolored artwork and badge are compiled as a layered icon.
+Without Xcode, macOS applies its automatic treatment for those styles.
+
+Drawing Claude-style icons needs the Command Line Tools (`xcode-select --install`); the
+icon tool is compiled once into `~/.claude-fix/icon-tool`. Without them, launchers use
+the simple built-in icons in `icons/`.
 
 ### Commands at a glance
 
@@ -439,7 +461,7 @@ into Terminal when it asks.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
-| `icon <label> <icon>` | Set a built-in icon, an image file, `claude`, or `default`. |
+| `icon <label> <choice>...` | Set a symbol, a color, an image, `claude`, or `default`. |
 | `upgrade` | Rebuild all launchers, add Claude Profiles, quit duplicate Claude windows. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
@@ -495,13 +517,11 @@ profile directory are rejected.
 1. **Sanity checks** — confirms macOS and that required tools exist.
 2. **Locate Claude** — checks standard paths, then Launch Services, then
    Spotlight. Exits with a clear message (and the download link) if not found.
-3. **Assign profile icons** — each launcher gets an original colored icon from
-   `icons/` (Work = indigo briefcase, Personal = sage person silhouette).
-   Custom labels (e.g. DRD, ClientA) hash to a palette color and get a
-   first-letter badge (D, C, etc.) with a white ring, generated at build time.
-   These are not Claude/Anthropic assets. After
-   `osacompile`, any `Assets.car` is removed so `applet.icns` is used (fixes
-   generic white icons).
+3. **Draw profile icons.** `icons/generate_icons.swift`, compiled once, reads
+   the icon of your installed Claude.app, recolors its brand color to the
+   profile's color, and adds a badge (Work = briefcase, Personal = person,
+   others = first letter). Symbols and colors live in `icons/glyphs.json`. The
+   flat icons in `icons/` are the fallback without the Command Line Tools.
 4. **Compile launchers.** `osacompile` builds a small AppleScript app that runs a
    bundled helper (`Contents/Resources/claude-fix.sh`). The helper reads the
    profile's data folder and Claude's location from the marker file next to it.
@@ -655,7 +675,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (87 tests). Run it directly —
+The suite takes about **30–60 seconds** on macOS (91 tests). Run it directly —
 piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 
@@ -695,7 +715,7 @@ Progress is mirrored to stderr when stdout is piped.
 | **Full lifecycle** | create → clean → re-create with data preserved |
 | **Claude Profiles** | Built with launchers, owns `claude://`, lists profiles, never treated as a profile |
 | **Runtime helper** | Routes reopen and links to the right PID; launches a stopped profile with the link; paths with spaces |
-| **Icons** | `icon` with images, built-in names, `claude`, `default`; survives upgrade; menu option |
+| **Icons** | Badge and color per profile; `icon` with symbols, colors, hex, letters, images, `claude`, `default`; redraw after a Claude update; fallback without the tool; menu option |
 | **Desktop** | Shortcuts are symlinks and `clean` removes them |
 
 Tests require **macOS** (`osacompile`, `osascript`). On Linux they
@@ -713,7 +733,7 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
    the GitHub release, and prints the `url` and `sha256` lines for
    `Formula/claude-fix.rb` in `sarhej/homebrew-claude-fix`.
 
-To regenerate the icons after changing `icons/glyphs.json` or the palette, run
+To regenerate the flat fallback icons after changing `icons/glyphs.json`, run
 `swift icons/generate_icons.swift` on a Mac.
 
 ---
@@ -728,8 +748,12 @@ To regenerate the icons after changing `icons/glyphs.json` or the palette, run
   sign-in or connector callback belongs to
 - Clicking a launcher brings back the profile's window even after it was closed,
   using a reopen Apple event sent to that exact process
-- New `icon` command and menu option, with 10 new built-in icons, any image file,
-  or Claude's own icon
+- Launcher icons are Claude's own icon, read from your install, recolored per
+  profile with a symbol badge. They redraw themselves after Claude or macOS updates
+- New `icon` command and menu option to pick the symbol (12 built in, a letter, or
+  none) and the color (19 named or any hex), or use an image or Claude's icon
+- With Xcode 26, icons are compiled as layered icons with native Dark, Clear and
+  Tinted styles on macOS 26
 - Launchers get their own bundle ID, are re-signed after editing, and are
   registered with Launch Services, so icon changes show up
 - Desktop shortcuts are symlinks, and `clean` removes them

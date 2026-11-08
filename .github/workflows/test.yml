@@ -35,14 +35,38 @@ jobs:
           osacompile -l JavaScript -o "$tmp/focus.scpt" "$tmp/focus.js"
           osacompile -l JavaScript -o "$tmp/claim.scpt" "$tmp/claim.js"
 
-      - name: Check the icon generator builds the built-in icons
+      - name: Check the icon tool
         run: |
           tmp=$(mktemp -d)
           cp icons/generate_icons.swift icons/glyphs.json "$tmp/"
-          swift "$tmp/generate_icons.swift"
-          for name in home code star heart book globe bolt leaf moon chat; do
+          swiftc -O -o "$tmp/generate_icons" "$tmp/generate_icons.swift"
+          # Flat fallback icons
+          (cd "$tmp" && ./generate_icons)
+          for name in profile-0 profile-7 home code star heart book globe bolt leaf moon chat; do
             test -s "$tmp/$name.icns"
           done
+          # Recolored app icon with each kind of badge (CI has no Claude, so use Calculator)
+          app=/System/Applications/Calculator.app
+          "$tmp/generate_icons" --app "$app" --symbol work --output "$tmp/work.icns" --assets-car "$tmp/Assets.car"
+          "$tmp/generate_icons" --app "$app" --letter C --color "#3366ff" --output "$tmp/letter.icns"
+          "$tmp/generate_icons" --app "$app" --no-badge --color teal --output "$tmp/plain.icns"
+          test -s "$tmp/work.icns" && test -s "$tmp/letter.icns" && test -s "$tmp/plain.icns"
+          if [ -f "$tmp/Assets.car" ]; then
+            echo "Layered icon built with $(xcodebuild -version | head -1):"
+            assetutil --info "$tmp/Assets.car" | grep -E '"(Name|Appearance|AssetType)"' | sort | uniq -c || true
+          else
+            echo "Layered icon skipped: this runner has no Xcode 26 actool"
+          fi
+          mkdir -p icon-previews
+          for name in work letter plain; do
+            sips -s format png "$tmp/$name.icns" --out "icon-previews/$name.png" >/dev/null
+          done
+
+      - name: Upload icon previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: icon-previews
+          path: icon-previews
 
       - name: Run test suite
         run: bash tests/run_tests.sh
