@@ -392,6 +392,24 @@ keeps its sign-in folder, icon, Dock pin and Desktop shortcut:
 claude-fix rename Work "Acme Corp"
 ```
 
+### Experimental: one Dock icon per profile
+
+A launcher starts the profile in your normal Claude.app, so while it runs, macOS shows
+Claude's own icon in the Dock next to the launcher. To try having the profile run as
+its own app instead, with one Dock icon in its color:
+
+```bash
+claude-fix experiment link Work
+claude-fix experiment status Work
+claude-fix experiment unlink Work     # back to the normal launcher
+```
+
+The linked app is built from links into your Claude.app, plus a copy of Claude's small
+main executable and its own name, ID and icon. Claude.app itself is never changed or
+re-signed. Because the app's Info.plist no longer matches Anthropic's signature, macOS
+may ask once for keychain access (choose Always Allow), and passkey sign-in may not
+work there. After a Claude update, the linked app catches up the next time it opens.
+
 ### Updating
 
 Launchers keep themselves current. Running `claude-fix` first updates any launchers
@@ -478,6 +496,7 @@ the simple built-in icons in `icons/`.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
+| `experiment link <label>` | Experimental: run the profile as its own app, one Dock icon. `unlink` undoes it. |
 | `rename <label> <new name>` | Rename a launcher; sign-in, icon, Dock pin and Desktop shortcut stay. |
 | `icon <label> <choice>...` | Set a symbol, a color, an image, `claude`, or `default`. |
 | `upgrade` | Rebuild all launchers, add Claude Profiles, quit duplicate Claude windows. |
@@ -693,7 +712,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (98 tests). Run it directly.
+The suite takes about **30–60 seconds** on macOS (102 tests). Run it directly.
 Piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 

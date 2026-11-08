@@ -1249,6 +1249,9 @@ Commands:
                        a letter, none), a color ($COLOR_NAMES, #RRGGBB),
                        an image file, claude (Claude's own icon), or default
   rename <label> <new> Rename a launcher; its sign-in, icon and Dock pin stay
+  experiment link|unlink|status <label>
+                       Experimental: make a profile its own app, so the Dock shows
+                       one icon for it while it runs
   upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
@@ -1373,6 +1376,7 @@ write_runtime_helper() {
 #   claim-burst         claim repeatedly while a newly launched Claude grabs the scheme
 #   icon-refresh        redraw this launcher's icon if Claude's icon or macOS changed
 #   maintain            upgrade all launchers if claude-fix was updated, else icon-refresh
+#   link-sync           (link apps) point this app at the current Claude.app
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1444,8 +1448,27 @@ claim_later() {
   nohup /bin/bash "$HERE/claude-fix.sh" claim-burst >/dev/null 2>&1 &
 }
 
+# Link apps (`claude-fix experiment link`) are their own app, so LaunchServices can open,
+# reopen and hand links to them directly.
+open_link_app() {
+  local target="$1" url="${2:-}"
+  if [ -n "$url" ]; then
+    open -a "$target" "$url" || return 1
+  else
+    open -a "$target" || return 1
+  fi
+  claim_later
+}
+
 cmd_open() {
-  local name="$1" url="${2:-}" app data pid
+  local name="$1" url="${2:-}" app data pid target
+  target="$APPS/$name.app"
+  if [ "$name" != "Claude" ] &&
+    [ "$(marker_value "$target/Contents/Resources/claude-fix-generated" kind)" = "link" ]; then
+    mkdir -p "$STATE_DIR" && printf '%s\n' "$name" >"$STATE_DIR/last-profile"
+    open_link_app "$target" "$url"
+    return
+  fi
   app=$(claude_app) || return 1
   if ! data=$(data_dir_for "$name"); then
     echo "There's no Claude profile named \"$name\"." >&2
@@ -1519,7 +1542,11 @@ cmd_icon_refresh() {
       { print }
       END { if (!found) print "claude-icon-stamp=" stamp }' "$MARKER" >"$tmp/marker" &&
       cat "$tmp/marker" >"$MARKER"
-    codesign --force --sign - "$bundle" >/dev/null 2>&1
+    if [ "$(marker_value "$MARKER" kind)" = "link" ]; then
+      plutil -replace CFBundleIconFile -string applet "$bundle/Contents/Info.plist" >/dev/null 2>&1
+    else
+      codesign --force --sign - "$bundle" >/dev/null 2>&1
+    fi
     touch "$bundle"
     if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
       /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
@@ -1552,6 +1579,75 @@ cmd_maintain() {
   cmd_icon_refresh
 }
 
+# Builds or refreshes a link app: Claude's files are linked, never copied or changed,
+# except the small main executable, which must live inside this bundle so that macOS
+# treats the running profile as this app. Info.plist is Claude's with our name, ID and icon.
+cmd_link_sync() {
+  local bundle contents app stamp iconfile entry name plist id label
+  bundle=$(cd "$HERE/../.." && pwd)
+  contents="$bundle/Contents"
+  app=$(claude_app) || return 1
+  stamp=$({ cat "$app/Contents/Info.plist"; ls -ln "$app/Contents/MacOS/Claude"; } 2>/dev/null | cksum | awk '{print $1}')
+  if [ "$stamp" = "$(marker_value "$MARKER" link-stamp)" ] && [ -x "$contents/MacOS/Claude" ] &&
+    [ -f "$contents/Info.plist" ]; then
+    return 0
+  fi
+
+  for entry in "$app/Contents/"*; do
+    name=$(basename "$entry")
+    case "$name" in Info.plist | MacOS | Resources) continue ;; esac
+    ln -sfn "$entry" "$contents/$name"
+  done
+
+  iconfile=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
+  case "$iconfile" in "" | *.icns) ;; *) iconfile="$iconfile.icns" ;; esac
+  for entry in "$app/Contents/Resources/"*; do
+    name=$(basename "$entry")
+    case "$name" in
+      Assets.car | applet.icns | claude-fix-generated | claude-fix.sh | focus.js | claim.js) continue ;;
+    esac
+    [ -n "$iconfile" ] && [ "$name" = "$iconfile" ] && continue
+    ln -sfn "$entry" "$contents/Resources/$name"
+  done
+  for entry in "$contents/Resources/"* "$contents/"*; do
+    if [ -L "$entry" ] && [ ! -e "$entry" ]; then rm -f "$entry"; fi
+  done
+
+  mkdir -p "$contents/MacOS"
+  cp -c "$app/Contents/MacOS/Claude" "$contents/MacOS/Claude.new" 2>/dev/null ||
+    cp "$app/Contents/MacOS/Claude" "$contents/MacOS/Claude.new" || return 1
+  xattr -d com.apple.quarantine "$contents/MacOS/Claude.new" 2>/dev/null || true
+  mv -f "$contents/MacOS/Claude.new" "$contents/MacOS/Claude"
+
+  label=$(marker_value "$MARKER" label)
+  id=$(marker_value "$MARKER" link-bundle-id)
+  plist="$contents/Info.plist.new"
+  cp "$app/Contents/Info.plist" "$plist" || return 1
+  plutil -replace CFBundleIdentifier -string "$id" "$plist"
+  plutil -replace CFBundleDisplayName -string "Claude $label" "$plist"
+  plutil -replace CFBundleExecutable -string "claude-fix-launch" "$plist"
+  plutil -replace CFBundleIconFile -string "applet" "$plist"
+  if [ -f "$contents/Resources/Assets.car" ] && [ ! -L "$contents/Resources/Assets.car" ]; then
+    plutil -replace CFBundleIconName -string "AppIcon" "$plist"
+  else
+    plutil -remove CFBundleIconName "$plist" >/dev/null 2>&1
+  fi
+  # Claude Profiles handles claude:// links; this app must not register for them.
+  plutil -remove CFBundleURLTypes "$plist" >/dev/null 2>&1
+  mv -f "$plist" "$contents/Info.plist"
+
+  awk -v stamp="$stamp" -F= '
+    $1 == "link-stamp" { next }
+    { print }
+    END { print "link-stamp=" stamp }' "$MARKER" >"$MARKER.new" && mv -f "$MARKER.new" "$MARKER"
+  touch "$bundle"
+  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+      -f "$bundle" >/dev/null 2>&1
+  fi
+  return 0
+}
+
 cmd_list() {
   local app marker
   echo "Claude"
@@ -1581,6 +1677,7 @@ case "${1:-}" in
     ;;
   icon-refresh) cmd_icon_refresh ;;
   maintain) cmd_maintain ;;
+  link-sync) cmd_link_sync ;;
   list) cmd_list ;;
   last) cat "$STATE_DIR/last-profile" 2>/dev/null || true ;;
   open) shift; cmd_open "$@" ;;
@@ -1593,7 +1690,7 @@ case "${1:-}" in
     done
     ;;
   *)
-    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh|maintain" >&2
+    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh|maintain|link-sync" >&2
     exit 2
     ;;
 esac
@@ -1934,6 +2031,10 @@ make_launcher() {
   fi
   [ -n "$dir" ] || dir=$(slug "$label")
   local data="$HOME/$dir"
+  if [ -f "$(link_profile_file "$dir")" ]; then
+    make_link_app "$label" "$dir" "$desktop_aliases"
+    return
+  fi
 
   if [ -z "$CLAUDE_APP" ] || [ ! -d "$CLAUDE_APP" ]; then
     ensure_claude_app || return 1
@@ -1961,6 +2062,135 @@ make_launcher() {
   echo "     built launcher: $app"
   if [ "$desktop_aliases" = "1" ]; then
     make_desktop_shortcut "$app" "$name"
+  fi
+}
+
+link_profile_file() {
+  printf '%s/link/%s' "$STATE_DIR" "$1"
+}
+
+# The start script of a link app: keeps the links current, then runs Claude from inside
+# this bundle with the profile's data folder.
+write_link_launcher() {
+  cat >"$1" <<'LAUNCH'
+#!/bin/bash
+# claude-fix link app. Generated by claude-fix; do not edit.
+here="$(cd "$(dirname "$0")" && pwd)"
+resources="$here/../Resources"
+/bin/bash "$resources/claude-fix.sh" link-sync >/dev/null 2>&1
+if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+  nohup /bin/bash "$resources/claude-fix.sh" maintain >/dev/null 2>&1 &
+fi
+data=$(awk -F= '$1 == "data-dir" {print substr($0, 10); exit}' "$resources/claude-fix-generated")
+exec "$here/Claude" --user-data-dir="$HOME/$data" "$@"
+LAUNCH
+  chmod +x "$1"
+}
+
+# Experimental: a profile app built from links into Claude.app instead of an AppleScript
+# launcher, so the running profile is this app and the Dock shows one icon for it.
+make_link_app() {
+  local label="$1" dir="$2" desktop_aliases="${3:-0}"
+  local name="Claude $label"
+  local app="$APPS/$name.app"
+  local res="$app/Contents/Resources"
+  rm -rf "$app"
+  mkdir -p "$res" "$app/Contents/MacOS"
+  write_runtime_helper "$res"
+  write_link_launcher "$app/Contents/MacOS/claude-fix-launch"
+  generate_profile_icon "$label" "$res" || true
+  printf 'generated-by=claude-fix\nkind=link\nlabel=%s\ndata-dir=%s\nclaude-app=%s\nlauncher-version=%s\n' \
+    "$label" "$dir" "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$res/claude-fix-generated"
+  printf 'claude-fix-path=%s\nlink-bundle-id=%s\n' "$(claude_fix_command || true)" \
+    "$BUNDLE_ID_PREFIX.profile.$(lowercase "$dir")" >>"$res/claude-fix-generated"
+  if [ -n "$ICON_ARGS" ]; then
+    printf 'icon-tool=%s\nicon-args=%s\nclaude-icon-stamp=%s\n' \
+      "$ICON_TOOL" "$ICON_ARGS" "$(claude_icon_stamp "$CLAUDE_APP")" >>"$res/claude-fix-generated"
+  fi
+  if ! /bin/bash "$res/claude-fix.sh" link-sync; then
+    echo "ERROR: could not link Claude $label to $CLAUDE_APP." >&2
+    return 1
+  fi
+  echo "     built link app: $app"
+  if [ "$desktop_aliases" = "1" ]; then
+    make_desktop_shortcut "$app" "$name"
+  fi
+}
+
+# PID of a running Claude using a data folder, from any app.
+profile_running_pid() {
+  local pid args
+  while read -r pid args; do
+    case "$args " in
+      *"/Contents/MacOS/Claude --user-data-dir=$1 "*) printf '%s' "$pid"; return 0 ;;
+    esac
+  done < <(ps -axww -o pid=,args= 2>/dev/null)
+  return 1
+}
+
+experiment_setup() {
+  local sub="${1:-}" label app dir pid
+  case "$sub" in
+    link | unlink | status) ;;
+    *)
+      echo "Usage: $0 experiment link|unlink|status <profile>" >&2
+      echo "  link    make the profile its own app, so the Dock shows one icon for it" >&2
+      echo "  unlink  go back to the normal launcher" >&2
+      exit 1
+      ;;
+  esac
+  label=$(trim_label "${2:-}")
+  label=${label#Claude }
+  app="$APPS/Claude $label.app"
+  if [ -z "$label" ] || [ ! -f "$app/$MARKER_FILE" ] ||
+    [ "$(marker_value "$app/$MARKER_FILE" "kind")" = "picker" ]; then
+    echo "ERROR: there's no generated launcher named Claude $label." >&2
+    exit 1
+  fi
+  dir=$(marker_value "$app/$MARKER_FILE" "data-dir")
+  [ -n "$dir" ] || dir=$(slug "$label")
+
+  if [ "$sub" = "status" ]; then
+    echo "Claude $label: $(marker_value "$app/$MARKER_FILE" "kind") (sign-in in ~/$dir)"
+    if pid=$(profile_running_pid "$HOME/$dir"); then
+      echo "  running: pid $pid, $(ps -o args= -p "$pid" 2>/dev/null | awk '{print $1}')"
+    else
+      echo "  not running"
+    fi
+    if [ -f "$app/Contents/MacOS/Claude" ]; then
+      echo "  signature of the linked Claude:"
+      codesign -dv "$app/Contents/MacOS/Claude" 2>&1 | grep -E '^(Identifier|TeamIdentifier|Authority=Developer ID Application)' |
+        sed 's/^/    /' || true
+    fi
+    return 0
+  fi
+
+  if pid=$(profile_running_pid "$HOME/$dir"); then
+    echo "ERROR: Claude $label is running (pid $pid). Quit it first, then run this again." >&2
+    exit 1
+  fi
+  require_tools osacompile osascript
+  ensure_claude_app || exit 1
+  ensure_icons_available >/dev/null 2>&1 || true
+  mkdir -p "$STATE_DIR/link"
+  if [ "$sub" = "link" ]; then
+    : >"$(link_profile_file "$dir")"
+  else
+    rm -f "$(link_profile_file "$dir")"
+  fi
+  make_launcher "$label" 0 >/dev/null || exit 1
+  if dock_app_pinned_quiet "$app"; then
+    dock_restart
+  fi
+  if [ "$sub" = "link" ]; then
+    echo "Claude $label is now its own app (experimental)."
+    echo "Open it from the Dock or ~/Applications. Please check:"
+    echo "  - one Dock icon, in its color, with the running dot under it"
+    echo "  - whether macOS asks for keychain access (choose Always Allow)"
+    echo "  - that you stay signed in after quitting and reopening"
+    echo "Undo with: $0 experiment unlink \"$label\""
+  else
+    echo "Claude $label is back to a normal launcher."
   fi
 }
 
@@ -2781,6 +3011,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
     rename)
       shift
       rename_setup "$@"
+      ;;
+    experiment)
+      shift
+      experiment_setup "$@"
       ;;
     version|--version)
       echo "claude-fix $CLAUDE_FIX_VERSION"

@@ -1729,6 +1729,117 @@ test_background_upgrade_is_quiet_and_locked() {
   teardown_sandbox
 }
 
+test_experiment_link_app_structure() {
+  test_start "experiment link builds an app from links and never changes Claude.app"
+  setup_sandbox
+  create_mock_claude_bundle
+  capture_script create --desktop Work >/dev/null
+  local claude="$CLAUDE_LAUNCHERS_CLAUDE_APP" before
+  before="$(tree_fingerprint "$claude")"
+  local out
+  out="$(capture_script experiment link Work)"
+  assert_contains "$out" "now its own app" "reports link mode"
+  local app="$HOME/Applications/Claude Work.app" c
+  c="$app/Contents"
+  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$c/Resources/claude-fix-generated")" "marker says link"
+  assert_eq "$claude/Contents/Frameworks" "$(readlink "$c/Frameworks")" "Frameworks linked"
+  assert_eq "$claude/Contents/_CodeSignature" "$(readlink "$c/_CodeSignature")" "signature data linked"
+  assert_eq "$claude/Contents/Resources/app.asar" "$(readlink "$c/Resources/app.asar")" "app code linked"
+  assert_eq "$claude/Contents/Resources/en.lproj" "$(readlink "$c/Resources/en.lproj")" "localizations linked"
+  assert_false "Claude's icon is not linked" test -e "$c/Resources/AppIcon.icns"
+  assert_false "the main executable is a real file" test -L "$c/MacOS/Claude"
+  assert_true "the main executable matches Claude's" cmp -s "$claude/Contents/MacOS/Claude" "$c/MacOS/Claude"
+  local plist="$c/Info.plist"
+  assert_eq "com.github.sarhej.claude-fix.profile.claudework" "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "own bundle ID"
+  assert_eq "Claude" "$(plutil -extract CFBundleName raw -o - "$plist")" "CFBundleName stays Claude for its helpers"
+  assert_eq "Claude Work" "$(plutil -extract CFBundleDisplayName raw -o - "$plist")" "display name"
+  assert_eq "claude-fix-launch" "$(plutil -extract CFBundleExecutable raw -o - "$plist")" "starts through the launch script"
+  assert_eq "1.0.0" "$(plutil -extract CFBundleShortVersionString raw -o - "$plist")" "rest of Claude's Info.plist kept"
+  assert_false "does not register claude:// itself" plutil -extract CFBundleURLTypes raw -o - "$plist"
+  assert_true "Desktop shortcut still points at it" test -L "$HOME/Desktop/Claude Work.app"
+  assert_eq "$before" "$(tree_fingerprint "$claude")" "Claude.app unchanged"
+  teardown_sandbox
+}
+
+test_experiment_link_app_launch_and_update() {
+  test_start "a link app starts its profile and follows Claude updates"
+  setup_sandbox
+  create_mock_claude_bundle
+  capture_script create Work >/dev/null
+  capture_script experiment link Work >/dev/null
+  local app="$HOME/Applications/Claude Work.app" claude="$CLAUDE_LAUNCHERS_CLAUDE_APP"
+  export CLAUDE_MOCK_ARGS_LOG="$SANDBOX/args.log"
+  "$app/Contents/MacOS/claude-fix-launch" -psn_0_1
+  assert_eq "--user-data-dir=$HOME/ClaudeWork -psn_0_1" "$(cat "$CLAUDE_MOCK_ARGS_LOG")" "runs Claude with the profile's folder"
+  # Simulate a Claude update: new Info.plist entry, new binary, a new resource, a removed one.
+  plutil -replace CFBundleShortVersionString -string 2.0.0 "$claude/Contents/Info.plist"
+  printf '#!/bin/bash\nprintf "v2 %%s\\n" "$*" >>"$CLAUDE_MOCK_ARGS_LOG"\n' >"$claude/Contents/MacOS/Claude"
+  printf 'new\n' >"$claude/Contents/Resources/new.pak"
+  rm -rf "$claude/Contents/Resources/en.lproj"
+  : >"$CLAUDE_MOCK_ARGS_LOG"
+  "$app/Contents/MacOS/claude-fix-launch"
+  assert_eq "v2 --user-data-dir=$HOME/ClaudeWork" "$(cat "$CLAUDE_MOCK_ARGS_LOG")" "runs the updated Claude"
+  assert_eq "2.0.0" "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" "Info.plist follows the update"
+  assert_eq "com.github.sarhej.claude-fix.profile.claudework" \
+    "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" "keeps its own ID after the update"
+  assert_true "new resource linked" test -L "$app/Contents/Resources/new.pak"
+  assert_false "removed resource unlinked" test -L "$app/Contents/Resources/en.lproj"
+  teardown_sandbox
+}
+
+test_experiment_link_survives_edits_and_unlinks() {
+  test_start "link mode survives upgrade, icon and rename; unlink and clean are safe"
+  setup_sandbox
+  create_mock_claude_bundle
+  install_fake_icon_tool
+  capture_script create Work Personal >/dev/null
+  capture_script experiment link Work >/dev/null
+  local claude="$CLAUDE_LAUNCHERS_CLAUDE_APP" before
+  before="$(tree_fingerprint "$claude")"
+  capture_script upgrade --no-quit-duplicates >/dev/null
+  capture_script icon Work code teal >/dev/null
+  local app="$HOME/Applications/Claude Work.app"
+  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$app/Contents/Resources/claude-fix-generated")" "still linked after upgrade and icon"
+  assert_eq "icon --symbol code --color teal" "$(cat "$app/Contents/Resources/applet.icns")" "icon applied"
+  assert_eq "AppIcon" "$(plutil -extract CFBundleIconName raw -o - "$app/Contents/Info.plist")" "layered icon used"
+  install_helper_fakes ""
+  run_helper open "Claude Work" "claude://claude.ai/login"
+  assert_eq "-a $app claude://claude.ai/login" "$(cat "$SANDBOX/open.log")" "picker hands links to the link app"
+  capture_script rename Work Acme >/dev/null
+  app="$HOME/Applications/Claude Acme.app"
+  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$app/Contents/Resources/claude-fix-generated")" "still linked after rename"
+  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "data-dir=ClaudeWork" "same sign-in folder"
+  local out
+  out="$(capture_script experiment status Acme)"
+  assert_contains "$out" "Claude Acme: link" "status shows link mode"
+  capture_script experiment unlink Acme >/dev/null
+  assert_file_exists "$app/Contents/MacOS/applet" "unlink restores the launcher"
+  capture_script experiment link Acme >/dev/null
+  capture_script clean >/dev/null
+  assert_file_missing "$app" "clean removes the link app"
+  assert_eq "$before" "$(tree_fingerprint "$claude")" "Claude.app unchanged throughout"
+  teardown_sandbox
+}
+
+test_experiment_usage() {
+  test_start "experiment explains itself and refuses unknown profiles"
+  setup_sandbox
+  create_mock_claude_bundle
+  local out code
+  set +e
+  out="$(capture_script experiment 2>&1)"
+  code=$?
+  set -e
+  assert_eq "1" "$code" "no subcommand fails"
+  assert_contains "$out" "experiment link|unlink|status" "shows usage"
+  set +e
+  capture_script experiment link Nobody >/dev/null 2>&1
+  code=$?
+  set -e
+  assert_eq "1" "$code" "unknown profile refused"
+  teardown_sandbox
+}
+
 test_script_syntax() {
   test_start "script passes bash -n syntax check"
   bash -n "$SCRIPT"
@@ -1843,6 +1954,10 @@ main() {
   test_commands_migrate_first
   test_launcher_upgrades_itself_after_update
   test_background_upgrade_is_quiet_and_locked
+  test_experiment_link_app_structure
+  test_experiment_link_app_launch_and_update
+  test_experiment_link_survives_edits_and_unlinks
+  test_experiment_usage
 
   print_summary
 }

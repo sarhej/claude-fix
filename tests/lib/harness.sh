@@ -147,7 +147,7 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
-    CLAUDE_LAUNCHERS_NEW_NAME 2>/dev/null || true
+    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_MOCK_ARGS_LOG 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -170,7 +170,7 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
-    CLAUDE_LAUNCHERS_NEW_NAME MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
+    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_MOCK_ARGS_LOG MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
 # Minimal fake Claude.app with an icon resource.
@@ -181,6 +181,43 @@ create_mock_claude() {
   chmod +x "$root/Contents/MacOS/Claude"
   printf 'mock-claude-icon\n' > "$root/Contents/Resources/AppIcon.icns"
   export CLAUDE_LAUNCHERS_CLAUDE_APP="$root"
+}
+
+# Mock Claude.app with the parts a link app points at. The binary records its arguments.
+create_mock_claude_bundle() {
+  create_mock_claude
+  local root="$CLAUDE_LAUNCHERS_CLAUDE_APP"
+  mkdir -p "$root/Contents/Frameworks/Electron Framework.framework" "$root/Contents/_CodeSignature" \
+    "$root/Contents/Resources/en.lproj"
+  printf 'framework\n' >"$root/Contents/Frameworks/Electron Framework.framework/Electron Framework"
+  printf 'seal\n' >"$root/Contents/_CodeSignature/CodeResources"
+  printf 'asar\n' >"$root/Contents/Resources/app.asar"
+  printf 'strings\n' >"$root/Contents/Resources/en.lproj/Localizable.strings"
+  printf 'APPL????' >"$root/Contents/PkgInfo"
+  cat >"$root/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Claude</string>
+<key>CFBundleIdentifier</key><string>com.anthropic.claudefordesktop</string>
+<key>CFBundleName</key><string>Claude</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>claude</string></array></dict></array>
+</dict></plist>
+PLIST
+  cat >"$root/Contents/MacOS/Claude" <<'MOCK'
+#!/bin/bash
+printf '%s\n' "$*" >>"${CLAUDE_MOCK_ARGS_LOG:-/dev/null}"
+MOCK
+  chmod +x "$root/Contents/MacOS/Claude"
+}
+
+# Checksum of every file and link in a tree, to prove it was not modified.
+tree_fingerprint() {
+  (cd "$1" && find . \( -type f -o -type l \) -print | LC_ALL=C sort | while read -r f; do
+    if [ -L "$f" ]; then printf 'L %s %s\n' "$f" "$(readlink "$f")"; else printf 'F %s %s\n' "$f" "$(cksum <"$f")"; fi
+  done) | cksum
 }
 
 # Mock Claude.app whose binary can stay alive (simulates "Claude is running").
