@@ -424,7 +424,7 @@ test_launcher_applescript_payload() {
   assert_contains "$decompiled" "launch" "AppleScript asks the helper to launch"
   assert_contains "$(cat "$app/Contents/Resources/focus.js")" "rapp" "focus sends a reopen event"
   marker="$(cat "$app/Contents/Resources/claude-fix-generated")"
-  assert_contains "$marker" "launcher-version=6" "marker records launcher version"
+  assert_contains "$marker" "launcher-version=7" "marker records launcher version"
   assert_contains "$marker" "data-dir=ClaudeWork" "marker records data dir"
   assert_contains "$marker" "claude-app=$CLAUDE_LAUNCHERS_CLAUDE_APP" "marker records Claude path"
   assert_contains "$marker" "kind=launcher" "marker records kind"
@@ -1128,7 +1128,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "Work has runtime helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=6" "Work marker upgraded"
+    "launcher-version=7" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix.sh" "Personal has runtime helper"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "upgrade adds the picker"
   teardown_sandbox
@@ -1151,7 +1151,7 @@ test_outdated_launchers_prompt_upgrade() {
   assert_contains "$out" "Updating 2 launcher(s) from an older version" "migrates without asking"
   assert_contains "$out" "Claude Profile Switcher is already set up" "then shows the menu"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=6" "Work is current"
+    "launcher-version=7" "Work is current"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "picker added"
   assert_file_exists "$HOME/ClaudeWork/Cookies" "sign-in kept"
   assert_true "old Desktop copy became a shortcut" test -L "$HOME/Desktop/Claude Work.app"
@@ -1274,6 +1274,10 @@ test_picker_created_with_launchers() {
     "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "picker bundle ID"
   assert_contains "$(plutil -extract CFBundleURLTypes xml1 -o - "$plist")" "<string>claude</string>" \
     "picker declares the claude scheme"
+  assert_contains "$(plutil -extract CFBundleURLTypes xml1 -o - "$plist")" "<string>claude-fix</string>" \
+    "picker takes its own background requests"
+  assert_contains "$(osadecompile "$picker/Contents/Resources/Scripts/main.scpt")" "on idle" \
+    "picker stays open to reclaim links"
   assert_contains "$(osadecompile "$picker/Contents/Resources/Scripts/main.scpt")" "open location" \
     "picker handles open location"
   local listed
@@ -1688,28 +1692,32 @@ test_commands_migrate_first() {
 }
 
 test_launcher_upgrades_itself_after_update() {
-  test_start "a launcher upgrades all launchers once claude-fix is updated"
+  test_start "Claude Profiles upgrades all launchers once claude-fix is updated"
   setup_sandbox
   create_mock_claude >/dev/null
+  install_fake_icon_tool
   capture_script create Work >/dev/null
-  local app="$HOME/Applications/Claude Work.app"
-  local marker="$app/Contents/Resources/claude-fix-generated"
+  local marker="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated"
+  local picker="$HOME/Applications/Claude Profiles.app/Contents/Resources"
   assert_contains "$(cat "$marker")" "claude-fix-path=$SCRIPT" "launcher records the claude-fix command"
-  assert_eq "6" "$(capture_script launcher-version)" "launcher-version command"
-  # A stand-in for a newer claude-fix that records being asked to upgrade.
+  assert_contains "$(cat "$picker/claude-fix-generated")" "claude-fix-path=$SCRIPT" "picker records it too"
+  assert_eq "7" "$(capture_script launcher-version)" "launcher-version command"
   local newer="$SANDBOX/newer-claude-fix"
-  printf '#!/bin/bash\ncase "$1" in launcher-version) echo %s ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
-    "${NEWER_VERSION:-7}" "$SANDBOX/upgrades.log" >"$newer"
+  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 8 ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
+    "$SANDBOX/upgrades.log" >"$newer"
   chmod +x "$newer"
   : >"$SANDBOX/upgrades.log"
-  sed -i.bak "s|^claude-fix-path=.*|claude-fix-path=$newer|" "$marker" && rm -f "$marker.bak"
-  bash "$app/Contents/Resources/claude-fix.sh" maintain
+  sed -i.bak "s|^claude-fix-path=.*|claude-fix-path=$newer|" "$picker/claude-fix-generated" && rm -f "$picker/claude-fix-generated.bak"
+  bash "$picker/claude-fix.sh" background
   assert_eq "upgrade upgrade --background" "$(cat "$SANDBOX/upgrades.log")" "newer claude-fix upgrades in the background"
-  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 6 ;; upgrade) echo upgrade >>"%s" ;; esac\n' \
+  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 7 ;; upgrade) echo upgrade >>"%s" ;; esac\n' \
     "$SANDBOX/upgrades.log" >"$newer"
   : >"$SANDBOX/upgrades.log"
-  bash "$app/Contents/Resources/claude-fix.sh" maintain
+  printf 'new-claude-icon\n' >"$CLAUDE_LAUNCHERS_CLAUDE_APP/Contents/Resources/AppIcon.icns"
+  : >"$FAKE_ICON_LOG"
+  bash "$picker/claude-fix.sh" background
   assert_eq "" "$(cat "$SANDBOX/upgrades.log")" "same version leaves launchers alone"
+  assert_eq "--symbol work" "$(cat "$FAKE_ICON_LOG")" "and refreshes launcher icons"
   teardown_sandbox
 }
 
@@ -1724,119 +1732,86 @@ test_background_upgrade_is_quiet_and_locked() {
   rmdir "$HOME/.claude-fix/upgrade.lock"
   capture_script upgrade --background >/dev/null
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=6" "migrated"
+    "launcher-version=7" "migrated"
   assert_file_missing "$HOME/.claude-fix/upgrade.lock" "lock released"
   teardown_sandbox
 }
 
-test_experiment_link_app_structure() {
-  test_start "experiment link builds an app from links and never changes Claude.app"
-  setup_sandbox
-  create_mock_claude_bundle
-  capture_script create --desktop Work >/dev/null
-  local claude="$CLAUDE_LAUNCHERS_CLAUDE_APP" before
-  before="$(tree_fingerprint "$claude")"
-  local out
-  out="$(capture_script experiment link Work)"
-  assert_contains "$out" "now its own app" "reports link mode"
-  local app="$HOME/Applications/Claude Work.app" c
-  c="$app/Contents"
-  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$c/Resources/claude-fix-generated")" "marker says link"
-  assert_eq "$claude/Contents/Frameworks" "$(readlink "$c/Frameworks")" "Frameworks linked"
-  assert_eq "$claude/Contents/_CodeSignature" "$(readlink "$c/_CodeSignature")" "signature data linked"
-  assert_eq "$claude/Contents/Resources/app.asar" "$(readlink "$c/Resources/app.asar")" "app code linked"
-  assert_eq "$claude/Contents/Resources/en.lproj" "$(readlink "$c/Resources/en.lproj")" "localizations linked"
-  assert_false "Claude's icon is not linked" test -e "$c/Resources/AppIcon.icns"
-  assert_false "the main executable is a real file" test -L "$c/MacOS/Claude"
-  assert_true "the main executable matches Claude's" cmp -s "$claude/Contents/MacOS/Claude" "$c/MacOS/Claude"
-  local plist="$c/Info.plist"
-  assert_eq "com.github.sarhej.claude-fix.profile.claudework" "$(plutil -extract CFBundleIdentifier raw -o - "$plist")" "own bundle ID"
-  assert_eq "Claude" "$(plutil -extract CFBundleName raw -o - "$plist")" "CFBundleName stays Claude for its helpers"
-  assert_eq "Claude Work" "$(plutil -extract CFBundleDisplayName raw -o - "$plist")" "display name"
-  assert_eq "claude-fix-launch" "$(plutil -extract CFBundleExecutable raw -o - "$plist")" "starts through the launch script"
-  assert_eq "1.0.0" "$(plutil -extract CFBundleShortVersionString raw -o - "$plist")" "rest of Claude's Info.plist kept"
-  assert_false "does not register claude:// itself" plutil -extract CFBundleURLTypes raw -o - "$plist"
-  assert_true "Desktop shortcut still points at it" test -L "$HOME/Desktop/Claude Work.app"
-  assert_eq "$before" "$(tree_fingerprint "$claude")" "Claude.app unchanged"
-  teardown_sandbox
-}
-
-test_experiment_link_app_launch_and_update() {
-  test_start "a link app starts its profile and follows Claude updates"
+test_own_app_copy() {
+  test_start "experiment on runs a profile from an unmodified copy of Claude with its icon"
   setup_sandbox
   create_mock_claude_bundle
   capture_script create Work >/dev/null
-  capture_script experiment link Work >/dev/null
-  local app="$HOME/Applications/Claude Work.app" claude="$CLAUDE_LAUNCHERS_CLAUDE_APP"
-  export CLAUDE_MOCK_ARGS_LOG="$SANDBOX/args.log"
-  "$app/Contents/MacOS/claude-fix-launch" -psn_0_1
-  assert_eq "--user-data-dir=$HOME/ClaudeWork -psn_0_1" "$(cat "$CLAUDE_MOCK_ARGS_LOG")" "runs Claude with the profile's folder"
-  # Simulate a Claude update: new Info.plist entry, new binary, a new resource, a removed one.
+  local claude="$CLAUDE_LAUNCHERS_CLAUDE_APP" before out
+  before="$(tree_fingerprint "$claude")"
+  out="$(capture_script experiment on Work)"
+  local clone="$HOME/.claude-fix/apps/ClaudeWork/Claude Work.app"
+  assert_contains "$out" "now runs from its own copy" "reports own-app mode"
+  assert_eq "$before" "$(tree_fingerprint "$clone")" "the copy is identical to Claude.app"
+  assert_eq "$before" "$(tree_fingerprint "$claude")" "Claude.app unchanged"
+  assert_contains "$(capture_script experiment status Work)" "own app" "status shows own-app mode"
+  local helper="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh"
+  install_helper_fakes "  71 $claude/Contents/MacOS/Claude"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$helper" launch
+  assert_eq "-n -a $clone --args --user-data-dir=$HOME/ClaudeWork" "$(cat "$SANDBOX/open.log")" \
+    "starts the profile from its copy"
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "seticon.js $HOME/Applications/Claude Work.app/Contents/Resources/applet.icns $clone" \
+    "sets the profile icon on the copy"
+  printf '  72 %s --user-data-dir=%s\n' "$clone/Contents/MacOS/Claude" "$HOME/ClaudeWork" >"$SANDBOX/ps.txt"
+  : >"$SANDBOX/osascript.log"
+  : >"$SANDBOX/open.log"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$helper" launch
+  assert_contains "$(cat "$SANDBOX/osascript.log")" "focus.js 72" "reopens the running copy"
+  # Same Claude.app: the copy is kept. Updated Claude.app: the copy is refreshed.
+  : >"$clone/kept"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$helper" launch
+  assert_file_exists "$clone/kept" "copy kept while Claude.app is unchanged"
   plutil -replace CFBundleShortVersionString -string 2.0.0 "$claude/Contents/Info.plist"
-  printf '#!/bin/bash\nprintf "v2 %%s\\n" "$*" >>"$CLAUDE_MOCK_ARGS_LOG"\n' >"$claude/Contents/MacOS/Claude"
-  printf 'new\n' >"$claude/Contents/Resources/new.pak"
-  rm -rf "$claude/Contents/Resources/en.lproj"
-  : >"$CLAUDE_MOCK_ARGS_LOG"
-  "$app/Contents/MacOS/claude-fix-launch"
-  assert_eq "v2 --user-data-dir=$HOME/ClaudeWork" "$(cat "$CLAUDE_MOCK_ARGS_LOG")" "runs the updated Claude"
-  assert_eq "2.0.0" "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")" "Info.plist follows the update"
-  assert_eq "com.github.sarhej.claude-fix.profile.claudework" \
-    "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" "keeps its own ID after the update"
-  assert_true "new resource linked" test -L "$app/Contents/Resources/new.pak"
-  assert_false "removed resource unlinked" test -L "$app/Contents/Resources/en.lproj"
+  PATH="$SANDBOX/fakebin:$PATH" bash "$helper" launch
+  assert_file_missing "$clone/kept" "copy refreshed after a Claude update"
+  assert_eq "2.0.0" "$(plutil -extract CFBundleShortVersionString raw -o - "$clone/Contents/Info.plist")" "copy has the new version"
   teardown_sandbox
 }
 
-test_experiment_link_survives_edits_and_unlinks() {
-  test_start "link mode survives upgrade, icon and rename; unlink and clean are safe"
+test_own_app_rename_off_clean() {
+  test_start "own-app copies follow renames and go away with off and clean"
   setup_sandbox
   create_mock_claude_bundle
-  install_fake_icon_tool
   capture_script create Work Personal >/dev/null
-  capture_script experiment link Work >/dev/null
+  capture_script experiment on Work >/dev/null
   local claude="$CLAUDE_LAUNCHERS_CLAUDE_APP" before
   before="$(tree_fingerprint "$claude")"
-  capture_script upgrade --no-quit-duplicates >/dev/null
-  capture_script icon Work code teal >/dev/null
-  local app="$HOME/Applications/Claude Work.app"
-  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$app/Contents/Resources/claude-fix-generated")" "still linked after upgrade and icon"
-  assert_eq "icon --symbol code --color teal" "$(cat "$app/Contents/Resources/applet.icns")" "icon applied"
-  assert_eq "AppIcon" "$(plutil -extract CFBundleIconName raw -o - "$app/Contents/Info.plist")" "layered icon used"
-  install_helper_fakes ""
-  run_helper open "Claude Work" "claude://claude.ai/login"
-  assert_eq "-a $app claude://claude.ai/login" "$(cat "$SANDBOX/open.log")" "picker hands links to the link app"
   capture_script rename Work Acme >/dev/null
-  app="$HOME/Applications/Claude Acme.app"
-  assert_eq "link" "$(awk -F= '$1=="kind"{print $2}' "$app/Contents/Resources/claude-fix-generated")" "still linked after rename"
-  assert_contains "$(cat "$app/Contents/Resources/claude-fix-generated")" "data-dir=ClaudeWork" "same sign-in folder"
-  local out
-  out="$(capture_script experiment status Acme)"
-  assert_contains "$out" "Claude Acme: link" "status shows link mode"
-  capture_script experiment unlink Acme >/dev/null
-  assert_file_exists "$app/Contents/MacOS/applet" "unlink restores the launcher"
-  capture_script experiment link Acme >/dev/null
+  PATH="$PATH" bash "$HOME/Applications/Claude Acme.app/Contents/Resources/claude-fix.sh" own-app-sync >/dev/null
+  assert_file_exists "$HOME/.claude-fix/apps/ClaudeWork/Claude Acme.app" "copy renamed with the profile"
+  assert_file_missing "$HOME/.claude-fix/apps/ClaudeWork/Claude Work.app" "old copy name gone"
+  capture_script experiment off Acme >/dev/null
+  assert_file_missing "$HOME/.claude-fix/apps/ClaudeWork" "off removes the copy"
+  capture_script experiment on Personal >/dev/null
   capture_script clean >/dev/null
-  assert_file_missing "$app" "clean removes the link app"
+  assert_file_missing "$HOME/.claude-fix/apps/ClaudePersonal" "clean removes copies"
   assert_eq "$before" "$(tree_fingerprint "$claude")" "Claude.app unchanged throughout"
-  teardown_sandbox
-}
-
-test_experiment_usage() {
-  test_start "experiment explains itself and refuses unknown profiles"
-  setup_sandbox
-  create_mock_claude_bundle
   local out code
   set +e
   out="$(capture_script experiment 2>&1)"
   code=$?
   set -e
-  assert_eq "1" "$code" "no subcommand fails"
-  assert_contains "$out" "experiment link|unlink|status" "shows usage"
-  set +e
-  capture_script experiment link Nobody >/dev/null 2>&1
-  code=$?
-  set -e
-  assert_eq "1" "$code" "unknown profile refused"
+  assert_eq "1" "$code" "experiment needs a subcommand"
+  assert_contains "$out" "experiment on|off|status" "shows usage"
+  teardown_sandbox
+}
+
+test_link_experiment_migrates_to_own_app() {
+  test_start "profiles from the link-app experiment become own-app profiles"
+  setup_sandbox
+  create_mock_claude_bundle
+  create_outdated_launcher "Work"
+  mkdir -p "$HOME/.claude-fix/link"
+  : >"$HOME/.claude-fix/link/ClaudeWork"
+  capture_script create Work >/dev/null
+  assert_file_exists "$HOME/.claude-fix/own-app/ClaudeWork" "preference carried over"
+  assert_file_missing "$HOME/.claude-fix/link" "old experiment state removed"
+  assert_file_exists "$HOME/Applications/Claude Work.app/Contents/MacOS/applet" "a normal launcher again"
   teardown_sandbox
 }
 
@@ -1954,10 +1929,9 @@ main() {
   test_commands_migrate_first
   test_launcher_upgrades_itself_after_update
   test_background_upgrade_is_quiet_and_locked
-  test_experiment_link_app_structure
-  test_experiment_link_app_launch_and_update
-  test_experiment_link_survives_edits_and_unlinks
-  test_experiment_usage
+  test_own_app_copy
+  test_own_app_rename_off_clean
+  test_link_experiment_migrates_to_own_app
 
   print_summary
 }

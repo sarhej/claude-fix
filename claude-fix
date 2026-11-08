@@ -20,9 +20,9 @@ APPS="$HOME/Applications"
 STATE_DIR="$HOME/.claude-fix"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/claude-fix.sh"
-# v6: shared runtime helper, reopen via Apple event, signed bundles, profile picker,
-# Claude-style icons, and launchers that upgrade themselves after claude-fix updates
-LAUNCHER_VERSION=6
+# v7: shared runtime helper, reopen via Apple event, signed bundles, profile picker that
+# also runs follow-up work, Claude-style icons, self-upgrade, optional own-app copies
+LAUNCHER_VERSION=7
 ICON_COUNT=8
 # Badge symbols and colors for `icon`; these match icons/glyphs.json.
 SYMBOL_NAMES="work personal home code star heart book globe bolt leaf moon chat"
@@ -1249,9 +1249,9 @@ Commands:
                        a letter, none), a color ($COLOR_NAMES, #RRGGBB),
                        an image file, claude (Claude's own icon), or default
   rename <label> <new> Rename a launcher; its sign-in, icon and Dock pin stay
-  experiment link|unlink|status <label>
-                       Experimental: make a profile its own app, so the Dock shows
-                       one icon for it while it runs
+  experiment on|off|status <label>
+                       Experimental: run a profile from its own copy of Claude, so
+                       the Dock and the app switcher show its icon
   upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
@@ -1311,11 +1311,13 @@ find_claude() {
     [ -d "$p" ] && { echo "$p"; return 0; }
   done
   local p
+  # Own-app copies share Claude's ID; never pick one of those.
   p=$(osascript -e 'POSIX path of (path to application id "com.anthropic.claudefordesktop")' 2>/dev/null || true)
+  case "$p" in "$STATE_DIR"/*) p="" ;; esac
   [ -n "$p" ] && [ -d "$p" ] && { echo "${p%/}"; return 0; }
   p=$(osascript -e 'POSIX path of (path to application "Claude")' 2>/dev/null || true)
   [ -n "$p" ] && [ -d "$p" ] && { echo "${p%/}"; return 0; }
-  p=$(mdfind 'kMDItemCFBundleIdentifier == "com.anthropic.claudefordesktop"' 2>/dev/null | head -n1 || true)
+  p=$(mdfind 'kMDItemCFBundleIdentifier == "com.anthropic.claudefordesktop"' 2>/dev/null | grep -v "/.claude-fix/" | head -n1 || true)
   [ -z "$p" ] && p=$(mdfind 'kMDItemFSName == "Claude.app"' 2>/dev/null | head -n1 || true)
   [ -n "$p" ] && [ -d "$p" ] && { echo "$p"; return 0; }
   return 1
@@ -1373,10 +1375,10 @@ write_runtime_helper() {
 #   last                print the profile opened most recently
 #   open NAME [URL]     open a profile by name, handing it URL if given
 #   claim [BUNDLE_ID]   make BUNDLE_ID (default: the picker) handle claude:// links
-#   claim-burst         claim repeatedly while a newly launched Claude grabs the scheme
 #   icon-refresh        redraw this launcher's icon if Claude's icon or macOS changed
-#   maintain            upgrade all launchers if claude-fix was updated, else icon-refresh
-#   link-sync           (link apps) point this app at the current Claude.app
+#   own-app-sync        (own-app profiles) create or refresh the profile's copy of Claude
+#   background          (Claude Profiles) upgrade launchers if claude-fix was updated,
+#                       and refresh launcher icons
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1442,37 +1444,69 @@ profile_pid() {
   return 1
 }
 
+# Follow-up work runs in Claude Profiles, which stays open (hidden) for a minute to take
+# back claude:// from a Claude that just started. Jobs left running by a launcher are
+# killed by macOS when the launcher quits.
 claim_later() {
   [ -d "$PICKER_APP" ] || return 0
   [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && return 0
-  nohup /bin/bash "$HERE/claude-fix.sh" claim-burst >/dev/null 2>&1 &
+  [ "$(marker_value "$MARKER" kind)" = "picker" ] && return 0
+  open -g "claude-fix://background" >/dev/null 2>&1 || true
 }
 
-# Link apps (`claude-fix experiment link`) are their own app, so LaunchServices can open,
-# reopen and hand links to them directly.
-open_link_app() {
-  local target="$1" url="${2:-}"
-  if [ -n "$url" ]; then
-    open -a "$target" "$url" || return 1
-  else
-    open -a "$target" || return 1
+# Own-app profiles run from their own copy of Claude.app, so the Dock and the app switcher
+# show the profile's icon. The copy is an unmodified APFS clone, so Anthropic's signature
+# stays valid; the icon is set the way Finder's Get Info does it, outside the signed files.
+own_app_sync() {
+  local label="$1" slug="$2" src="$3" icon="$4" dir dest old stamp sum
+  dir="$STATE_DIR/apps/$slug"
+  dest="$dir/Claude $label.app"
+  mkdir -p "$dir"
+  if [ ! -d "$dest" ]; then
+    for old in "$dir/"*.app; do
+      if [ -d "$old" ]; then
+        mv "$old" "$dest"
+        break
+      fi
+    done
   fi
-  claim_later
+  stamp=$({ cat "$src/Contents/Info.plist"; ls -ln "$src/Contents/MacOS/Claude"; } 2>/dev/null | cksum | awk '{print $1}')
+  if [ ! -d "$dest" ] || [ "$stamp" != "$(cat "$dir/source.stamp" 2>/dev/null)" ]; then
+    rm -rf "$dir/.new.app"
+    if ! cp -cR "$src" "$dir/.new.app" 2>/dev/null && ! cp -R "$src" "$dir/.new.app"; then
+      rm -rf "$dir/.new.app"
+      return 1
+    fi
+    # A copy of a downloaded app would ask "downloaded from the Internet?" again.
+    xattr -dr com.apple.quarantine "$dir/.new.app" 2>/dev/null || true
+    rm -rf "$dest"
+    mv "$dir/.new.app" "$dest"
+    printf '%s\n' "$stamp" >"$dir/source.stamp"
+    rm -f "$dir/icon.sum"
+  fi
+  if [ -f "$icon" ]; then
+    sum=$(cksum <"$icon" | awk '{print $1}')
+    if [ "$sum" != "$(cat "$dir/icon.sum" 2>/dev/null)" ] || [ ! -e "$dest/Icon"$'\r' ]; then
+      if osascript -l JavaScript "$HERE/seticon.js" "$icon" "$dest" >/dev/null 2>&1; then
+        printf '%s\n' "$sum" >"$dir/icon.sum"
+      fi
+    fi
+  fi
+  printf '%s' "$dest"
 }
 
 cmd_open() {
-  local name="$1" url="${2:-}" app data pid target
-  target="$APPS/$name.app"
-  if [ "$name" != "Claude" ] &&
-    [ "$(marker_value "$target/Contents/Resources/claude-fix-generated" kind)" = "link" ]; then
-    mkdir -p "$STATE_DIR" && printf '%s\n' "$name" >"$STATE_DIR/last-profile"
-    open_link_app "$target" "$url"
-    return
-  fi
+  local name="$1" url="${2:-}" app data pid own
   app=$(claude_app) || return 1
   if ! data=$(data_dir_for "$name"); then
     echo "There's no Claude profile named \"$name\"." >&2
     return 1
+  fi
+  if [ -n "$data" ] && [ -f "$STATE_DIR/own-app/$(basename "$data")" ]; then
+    if own=$(own_app_sync "${name#Claude }" "$(basename "$data")" "$app" \
+      "$APPS/$name.app/Contents/Resources/applet.icns"); then
+      app="$own"
+    fi
   fi
   mkdir -p "$STATE_DIR" && printf '%s\n' "$name" >"$STATE_DIR/last-profile"
 
@@ -1542,11 +1576,7 @@ cmd_icon_refresh() {
       { print }
       END { if (!found) print "claude-icon-stamp=" stamp }' "$MARKER" >"$tmp/marker" &&
       cat "$tmp/marker" >"$MARKER"
-    if [ "$(marker_value "$MARKER" kind)" = "link" ]; then
-      plutil -replace CFBundleIconFile -string applet "$bundle/Contents/Info.plist" >/dev/null 2>&1
-    else
-      codesign --force --sign - "$bundle" >/dev/null 2>&1
-    fi
+    codesign --force --sign - "$bundle" >/dev/null 2>&1
     touch "$bundle"
     if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
       /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
@@ -1558,10 +1588,10 @@ cmd_icon_refresh() {
   return 0
 }
 
-# After claude-fix is updated (for example by Homebrew), the next launch upgrades every
-# launcher in the background. exec, because the upgrade replaces this very file.
-cmd_maintain() {
-  local tool newest mine
+# Run by Claude Profiles after a profile starts. When claude-fix was updated (for example
+# by Homebrew), upgrade every launcher; exec, because the upgrade replaces this file.
+cmd_background() {
+  local tool newest mine helper
   tool=$(marker_value "$MARKER" claude-fix-path)
   if [ -n "$tool" ] && [ -x "$tool" ]; then
     newest=$("$tool" launcher-version 2>/dev/null || true)
@@ -1576,75 +1606,9 @@ cmd_maintain() {
         ;;
     esac
   fi
-  cmd_icon_refresh
-}
-
-# Builds or refreshes a link app: Claude's files are linked, never copied or changed,
-# except the small main executable, which must live inside this bundle so that macOS
-# treats the running profile as this app. Info.plist is Claude's with our name, ID and icon.
-cmd_link_sync() {
-  local bundle contents app stamp iconfile entry name plist id label
-  bundle=$(cd "$HERE/../.." && pwd)
-  contents="$bundle/Contents"
-  app=$(claude_app) || return 1
-  stamp=$({ cat "$app/Contents/Info.plist"; ls -ln "$app/Contents/MacOS/Claude"; } 2>/dev/null | cksum | awk '{print $1}')
-  if [ "$stamp" = "$(marker_value "$MARKER" link-stamp)" ] && [ -x "$contents/MacOS/Claude" ] &&
-    [ -f "$contents/Info.plist" ]; then
-    return 0
-  fi
-
-  for entry in "$app/Contents/"*; do
-    name=$(basename "$entry")
-    case "$name" in Info.plist | MacOS | Resources) continue ;; esac
-    ln -sfn "$entry" "$contents/$name"
+  for helper in "$APPS/Claude "*.app/Contents/Resources/claude-fix.sh; do
+    [ -f "$helper" ] && [ "$helper" != "$HERE/claude-fix.sh" ] && /bin/bash "$helper" icon-refresh
   done
-
-  iconfile=$(plutil -extract CFBundleIconFile raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)
-  case "$iconfile" in "" | *.icns) ;; *) iconfile="$iconfile.icns" ;; esac
-  for entry in "$app/Contents/Resources/"*; do
-    name=$(basename "$entry")
-    case "$name" in
-      Assets.car | applet.icns | claude-fix-generated | claude-fix.sh | focus.js | claim.js) continue ;;
-    esac
-    [ -n "$iconfile" ] && [ "$name" = "$iconfile" ] && continue
-    ln -sfn "$entry" "$contents/Resources/$name"
-  done
-  for entry in "$contents/Resources/"* "$contents/"*; do
-    if [ -L "$entry" ] && [ ! -e "$entry" ]; then rm -f "$entry"; fi
-  done
-
-  mkdir -p "$contents/MacOS"
-  cp -c "$app/Contents/MacOS/Claude" "$contents/MacOS/Claude.new" 2>/dev/null ||
-    cp "$app/Contents/MacOS/Claude" "$contents/MacOS/Claude.new" || return 1
-  xattr -d com.apple.quarantine "$contents/MacOS/Claude.new" 2>/dev/null || true
-  mv -f "$contents/MacOS/Claude.new" "$contents/MacOS/Claude"
-
-  label=$(marker_value "$MARKER" label)
-  id=$(marker_value "$MARKER" link-bundle-id)
-  plist="$contents/Info.plist.new"
-  cp "$app/Contents/Info.plist" "$plist" || return 1
-  plutil -replace CFBundleIdentifier -string "$id" "$plist"
-  plutil -replace CFBundleDisplayName -string "Claude $label" "$plist"
-  plutil -replace CFBundleExecutable -string "claude-fix-launch" "$plist"
-  plutil -replace CFBundleIconFile -string "applet" "$plist"
-  if [ -f "$contents/Resources/Assets.car" ] && [ ! -L "$contents/Resources/Assets.car" ]; then
-    plutil -replace CFBundleIconName -string "AppIcon" "$plist"
-  else
-    plutil -remove CFBundleIconName "$plist" >/dev/null 2>&1
-  fi
-  # Claude Profiles handles claude:// links; this app must not register for them.
-  plutil -remove CFBundleURLTypes "$plist" >/dev/null 2>&1
-  mv -f "$plist" "$contents/Info.plist"
-
-  awk -v stamp="$stamp" -F= '
-    $1 == "link-stamp" { next }
-    { print }
-    END { print "link-stamp=" stamp }' "$MARKER" >"$MARKER.new" && mv -f "$MARKER.new" "$MARKER"
-  touch "$bundle"
-  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-      -f "$bundle" >/dev/null 2>&1
-  fi
   return 0
 }
 
@@ -1671,26 +1635,20 @@ case "${1:-}" in
   launch)
     label=$(marker_value "$MARKER" label)
     cmd_open "Claude $label" || exit 1
-    if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
-      nohup /bin/bash "$HERE/claude-fix.sh" maintain >/dev/null 2>&1 &
-    fi
     ;;
   icon-refresh) cmd_icon_refresh ;;
-  maintain) cmd_maintain ;;
-  link-sync) cmd_link_sync ;;
+  background) cmd_background ;;
+  own-app-sync)
+    label=$(marker_value "$MARKER" label)
+    app=$(claude_app) || exit 1
+    own_app_sync "$label" "$(marker_value "$MARKER" data-dir)" "$app" "$HERE/applet.icns" || exit 1
+    ;;
   list) cmd_list ;;
   last) cat "$STATE_DIR/last-profile" 2>/dev/null || true ;;
   open) shift; cmd_open "$@" ;;
   claim) shift; cmd_claim "$@" ;;
-  claim-burst)
-    # Claude takes claude:// a few seconds into launch (up to ~20s on a cold start).
-    for delay in 1 2 3 4 5 7 8 15 15; do
-      sleep "$delay"
-      cmd_claim || break
-    done
-    ;;
   *)
-    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh|maintain|link-sync" >&2
+    echo "usage: claude-fix.sh launch|list|last|open NAME [URL]|claim [BUNDLE_ID]|icon-refresh|own-app-sync|background" >&2
     exit 2
     ;;
 esac
@@ -1725,6 +1683,21 @@ function run(argv) {
   }
   if (!reply || reply.isNil() || (error[0] && !error[0].isNil())) {
     throw new Error('Apple event was not delivered');
+  }
+}
+JS
+
+  # Sets a Finder custom icon, as Get Info does. It lives outside the signed files.
+  cat >"$resources/seticon.js" <<'JS'
+ObjC.import('AppKit');
+
+function run(argv) {
+  var image = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (image.isNil()) {
+    throw new Error('could not read ' + argv[0]);
+  }
+  if (!$.NSWorkspace.sharedWorkspace.setIconForFileOptions(image, argv[1], 0)) {
+    throw new Error('could not set the icon of ' + argv[1]);
   }
 }
 JS
@@ -1771,10 +1744,12 @@ finalize_bundle() {
 }
 
 compile_applet() {
-  local app="$1" source="$2" tmp
+  local app="$1" source="$2" stay_open="${3:-0}" tmp
+  local flags=()
+  [ "$stay_open" = "1" ] && flags=(-s)
   tmp=$(mktemp "${TMPDIR:-/tmp}/claude-fix-applet.XXXXXX")
   printf '%s\n' "$source" >"$tmp"
-  if ! osacompile -o "$app" "$tmp" >/dev/null 2>&1; then
+  if ! osacompile ${flags[@]+"${flags[@]}"} -o "$app" "$tmp" >/dev/null 2>&1; then
     rm -f "$tmp"
     echo "ERROR: failed to build app: $app" >&2
     return 1
@@ -1797,18 +1772,50 @@ APPLESCRIPT
 
 picker_applet_source() {
   cat <<'APPLESCRIPT'
+property claimUntil : missing value
+
 on run
 	my pick("")
+	my keepClaiming()
 end run
 
 on open location theURL
-	my pick(theURL)
+	if theURL starts with "claude-fix:" then
+		my keepClaiming()
+		try
+			do shell script my helper() & " claim"
+			do shell script my helper() & " background"
+		end try
+	else
+		my pick(theURL)
+		my keepClaiming()
+	end if
 end open location
 
+-- Claude takes claude:// back when it starts, so stay open (hidden) for a minute and
+-- keep reclaiming it, then quit.
+on keepClaiming()
+	set claimUntil to (current date) + 60
+end keepClaiming
+
+on idle
+	if claimUntil is not missing value and (current date) < claimUntil then
+		try
+			do shell script my helper() & " claim"
+		end try
+		return 3
+	end if
+	quit
+	return 3
+end idle
+
+on helper()
+	return "/bin/bash " & quoted form of ((POSIX path of (path to me)) & "Contents/Resources/claude-fix.sh")
+end helper
+
 on pick(theURL)
-	set helper to "/bin/bash " & quoted form of ((POSIX path of (path to me)) & "Contents/Resources/claude-fix.sh")
-	set profileNames to paragraphs of (do shell script helper & " list")
-	set lastName to do shell script helper & " last"
+	set profileNames to paragraphs of (do shell script my helper() & " list")
+	set lastName to do shell script my helper() & " last"
 	set preselect to item 1 of profileNames
 	if profileNames contains lastName then set preselect to lastName
 	if theURL is "" then
@@ -1821,7 +1828,7 @@ on pick(theURL)
 	if choice is false then return
 	set chosen to item 1 of choice
 	try
-		do shell script helper & " open " & quoted form of chosen & " " & quoted form of theURL
+		do shell script my helper() & " open " & quoted form of chosen & " " & quoted form of theURL
 	on error errText
 		display alert "Couldn't open " & chosen message errText as warning
 	end try
@@ -1919,7 +1926,15 @@ claude_fix_command() {
 # Brings launchers from older versions up to date, and turns old Desktop copies into
 # shortcuts. Runs before anything that works with launchers. Sign-ins are untouched.
 migrate_launchers() {
-  local i label outdated=() desktop
+  local i label outdated=() desktop old
+  # The earlier link-app experiment becomes own-app mode.
+  if [ -d "$STATE_DIR/link" ]; then
+    mkdir -p "$STATE_DIR/own-app"
+    for old in "$STATE_DIR/link/"*; do
+      [ -f "$old" ] && : >"$STATE_DIR/own-app/$(basename "$old")"
+    done
+    rm -rf "$STATE_DIR/link"
+  fi
   load_generated_launchers
   [ "${#GENERATED_LABELS[@]}" -gt 0 ] || return 0
   for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
@@ -1958,6 +1973,10 @@ background_upgrade() {
   mkdir "$lock" 2>/dev/null || return 0
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] claude-fix $CLAUDE_FIX_VERSION background upgrade"
   migrate_launchers || true
+  local helper
+  for helper in "$APPS/Claude "*.app/Contents/Resources/claude-fix.sh; do
+    [ -f "$helper" ] && /bin/bash "$helper" icon-refresh
+  done
   rmdir "$lock" 2>/dev/null || true
 }
 
@@ -2031,10 +2050,6 @@ make_launcher() {
   fi
   [ -n "$dir" ] || dir=$(slug "$label")
   local data="$HOME/$dir"
-  if [ -f "$(link_profile_file "$dir")" ]; then
-    make_link_app "$label" "$dir" "$desktop_aliases"
-    return
-  fi
 
   if [ -z "$CLAUDE_APP" ] || [ ! -d "$CLAUDE_APP" ]; then
     ensure_claude_app || return 1
@@ -2065,58 +2080,6 @@ make_launcher() {
   fi
 }
 
-link_profile_file() {
-  printf '%s/link/%s' "$STATE_DIR" "$1"
-}
-
-# The start script of a link app: keeps the links current, then runs Claude from inside
-# this bundle with the profile's data folder.
-write_link_launcher() {
-  cat >"$1" <<'LAUNCH'
-#!/bin/bash
-# claude-fix link app. Generated by claude-fix; do not edit.
-here="$(cd "$(dirname "$0")" && pwd)"
-resources="$here/../Resources"
-/bin/bash "$resources/claude-fix.sh" link-sync >/dev/null 2>&1
-if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
-  nohup /bin/bash "$resources/claude-fix.sh" maintain >/dev/null 2>&1 &
-fi
-data=$(awk -F= '$1 == "data-dir" {print substr($0, 10); exit}' "$resources/claude-fix-generated")
-exec "$here/Claude" --user-data-dir="$HOME/$data" "$@"
-LAUNCH
-  chmod +x "$1"
-}
-
-# Experimental: a profile app built from links into Claude.app instead of an AppleScript
-# launcher, so the running profile is this app and the Dock shows one icon for it.
-make_link_app() {
-  local label="$1" dir="$2" desktop_aliases="${3:-0}"
-  local name="Claude $label"
-  local app="$APPS/$name.app"
-  local res="$app/Contents/Resources"
-  rm -rf "$app"
-  mkdir -p "$res" "$app/Contents/MacOS"
-  write_runtime_helper "$res"
-  write_link_launcher "$app/Contents/MacOS/claude-fix-launch"
-  generate_profile_icon "$label" "$res" || true
-  printf 'generated-by=claude-fix\nkind=link\nlabel=%s\ndata-dir=%s\nclaude-app=%s\nlauncher-version=%s\n' \
-    "$label" "$dir" "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$res/claude-fix-generated"
-  printf 'claude-fix-path=%s\nlink-bundle-id=%s\n' "$(claude_fix_command || true)" \
-    "$BUNDLE_ID_PREFIX.profile.$(lowercase "$dir")" >>"$res/claude-fix-generated"
-  if [ -n "$ICON_ARGS" ]; then
-    printf 'icon-tool=%s\nicon-args=%s\nclaude-icon-stamp=%s\n' \
-      "$ICON_TOOL" "$ICON_ARGS" "$(claude_icon_stamp "$CLAUDE_APP")" >>"$res/claude-fix-generated"
-  fi
-  if ! /bin/bash "$res/claude-fix.sh" link-sync; then
-    echo "ERROR: could not link Claude $label to $CLAUDE_APP." >&2
-    return 1
-  fi
-  echo "     built link app: $app"
-  if [ "$desktop_aliases" = "1" ]; then
-    make_desktop_shortcut "$app" "$name"
-  fi
-}
-
 # PID of a running Claude using a data folder, from any app.
 profile_running_pid() {
   local pid args
@@ -2128,14 +2091,23 @@ profile_running_pid() {
   return 1
 }
 
+own_app_file() {
+  printf '%s/own-app/%s' "$STATE_DIR" "$1"
+}
+
 experiment_setup() {
-  local sub="${1:-}" label app dir pid
+  local sub="${1:-}" label app dir pid clone
   case "$sub" in
-    link | unlink | status) ;;
+    link) sub="on" ;;
+    unlink) sub="off" ;;
+  esac
+  case "$sub" in
+    on | off | status) ;;
     *)
-      echo "Usage: $0 experiment link|unlink|status <profile>" >&2
-      echo "  link    make the profile its own app, so the Dock shows one icon for it" >&2
-      echo "  unlink  go back to the normal launcher" >&2
+      echo "Usage: $0 experiment on|off|status <profile>" >&2
+      echo "  on      run the profile from its own copy of Claude, so the Dock and the" >&2
+      echo "          app switcher show its icon" >&2
+      echo "  off     go back to running it from Claude.app" >&2
       exit 1
       ;;
   esac
@@ -2151,16 +2123,18 @@ experiment_setup() {
   [ -n "$dir" ] || dir=$(slug "$label")
 
   if [ "$sub" = "status" ]; then
-    echo "Claude $label: $(marker_value "$app/$MARKER_FILE" "kind") (sign-in in ~/$dir)"
+    if [ -f "$(own_app_file "$dir")" ]; then
+      echo "Claude $label: own app (sign-in in ~/$dir)"
+      for clone in "$STATE_DIR/apps/$dir/"*.app; do
+        [ -d "$clone" ] && echo "  copy: $clone ($(plutil -extract CFBundleShortVersionString raw -o - "$clone/Contents/Info.plist" 2>/dev/null || echo "unknown version"))"
+      done
+    else
+      echo "Claude $label: runs from Claude.app (sign-in in ~/$dir)"
+    fi
     if pid=$(profile_running_pid "$HOME/$dir"); then
       echo "  running: pid $pid, $(ps -o args= -p "$pid" 2>/dev/null | awk '{print $1}')"
     else
       echo "  not running"
-    fi
-    if [ -f "$app/Contents/MacOS/Claude" ]; then
-      echo "  signature of the linked Claude:"
-      codesign -dv "$app/Contents/MacOS/Claude" 2>&1 | grep -E '^(Identifier|TeamIdentifier|Authority=Developer ID Application)' |
-        sed 's/^/    /' || true
     fi
     return 0
   fi
@@ -2169,29 +2143,25 @@ experiment_setup() {
     echo "ERROR: Claude $label is running (pid $pid). Quit it first, then run this again." >&2
     exit 1
   fi
-  require_tools osacompile osascript
   ensure_claude_app || exit 1
-  ensure_icons_available >/dev/null 2>&1 || true
-  mkdir -p "$STATE_DIR/link"
-  if [ "$sub" = "link" ]; then
-    : >"$(link_profile_file "$dir")"
-  else
-    rm -f "$(link_profile_file "$dir")"
+  mkdir -p "$STATE_DIR/own-app"
+  if [ "$sub" = "off" ]; then
+    rm -f "$(own_app_file "$dir")"
+    rm -rf "$STATE_DIR/apps/$dir"
+    echo "Claude $label runs from Claude.app again."
+    return 0
   fi
-  make_launcher "$label" 0 >/dev/null || exit 1
-  if dock_app_pinned_quiet "$app"; then
-    dock_restart
+  : >"$(own_app_file "$dir")"
+  echo "Making Claude $label its own app..."
+  if ! clone=$(/bin/bash "$app/$LAUNCH_SCRIPT_REL" own-app-sync); then
+    rm -f "$(own_app_file "$dir")"
+    echo "ERROR: could not copy $CLAUDE_APP for Claude $label." >&2
+    exit 1
   fi
-  if [ "$sub" = "link" ]; then
-    echo "Claude $label is now its own app (experimental)."
-    echo "Open it from the Dock or ~/Applications. Please check:"
-    echo "  - one Dock icon, in its color, with the running dot under it"
-    echo "  - whether macOS asks for keychain access (choose Always Allow)"
-    echo "  - that you stay signed in after quitting and reopening"
-    echo "Undo with: $0 experiment unlink \"$label\""
-  else
-    echo "Claude $label is back to a normal launcher."
-  fi
+  echo "Claude $label now runs from its own copy of Claude:"
+  echo "  $clone"
+  echo "Open it with its launcher. The Dock and the app switcher should show its icon."
+  echo "Undo with: $0 experiment off \"$label\""
 }
 
 picker_is_current() {
@@ -2205,16 +2175,16 @@ install_picker() {
   local plist="$PICKER_APP/Contents/Info.plist"
   ensure_claude_app >/dev/null 2>&1 || return 0
   rm -rf "$PICKER_APP"
-  compile_applet "$PICKER_APP" "$(picker_applet_source)" || return 1
+  compile_applet "$PICKER_APP" "$(picker_applet_source)" 1 || return 1
   write_runtime_helper "$PICKER_APP/Contents/Resources"
   rm -f "$PICKER_APP/Contents/Resources/Assets.car"
   ICON_ASSET_NAME=""
   copy_claude_icon "$PICKER_APP/Contents/Resources"
-  printf 'generated-by=claude-fix\nkind=picker\nclaude-app=%s\nlauncher-version=%s\n' \
-    "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$PICKER_APP/$MARKER_FILE"
+  printf 'generated-by=claude-fix\nkind=picker\nclaude-app=%s\nlauncher-version=%s\nclaude-fix-path=%s\n' \
+    "$CLAUDE_APP" "$LAUNCHER_VERSION" "$(claude_fix_command || true)" >"$PICKER_APP/$MARKER_FILE"
   plist_set "$plist" LSUIElement -bool YES
   plist_set "$plist" CFBundleURLTypes -xml \
-    "<array><dict><key>CFBundleURLName</key><string>Claude links</string><key>CFBundleURLSchemes</key><array><string>claude</string><string>msauth.$CLAUDE_BUNDLE_ID</string></array></dict></array>"
+    "<array><dict><key>CFBundleURLName</key><string>Claude links</string><key>CFBundleURLSchemes</key><array><string>claude</string><string>msauth.$CLAUDE_BUNDLE_ID</string><string>claude-fix</string></array></dict></array>"
   finalize_bundle "$PICKER_APP" "$PICKER_BUNDLE_ID" \
     "Lets $PICKER_NAME hand sign-in links to the Claude you choose."
   if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
@@ -2943,6 +2913,7 @@ clean_setup() {
     echo "Removing launcher: $base.app"
     rm -rf "$app"
     remove_desktop_shortcut "$base"
+    rm -rf "$STATE_DIR/apps/$dir"
 
     if [ "$purge" = "1" ]; then
       if [ -d "$data" ]; then
