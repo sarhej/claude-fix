@@ -1263,7 +1263,7 @@ Interactive default:
   profile (Work or Personal). If launchers are outdated, offers one-click upgrade.
 
 Create options:
-  --desktop            Also copy clickable launchers to your Desktop
+  --desktop            Also put shortcuts to the launchers on your Desktop
   --no-desktop         Do not copy launchers to your Desktop
   --launch             Launch the created profile(s) after setup
   --no-launch          Do not launch profiles after setup
@@ -1288,9 +1288,9 @@ Examples:
   claude-fix clean --purge
 
 Note:
-  Your normal Claude.app keeps its current login. Generated launchers use
-  original profile icons (not affiliated with Anthropic) and open isolated
-  profiles via --user-data-dir. Clicking a launcher again brings back that
+  Your normal Claude.app keeps its current login. Generated launchers draw
+  their icons from your installed Claude.app, recolored and badged (Claude.app
+  itself is never changed), and open isolated profiles via --user-data-dir. Clicking a launcher again brings back that
   profile's window. $PICKER_NAME.app takes over claude:// links, so sign-in
   and connector callbacks ask which Claude they belong to.
 MSG

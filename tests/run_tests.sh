@@ -39,7 +39,7 @@ test_help() {
   assert_contains "$out" "--dock-cleanup" "documents Dock cleanup option"
   assert_contains "$out" "upgrade" "documents upgrade command"
   assert_contains "$out" "existing Claude login" "documents existing profile model"
-  assert_contains "$out" "original profile icons" "documents icon policy"
+  assert_contains "$out" "itself is never changed" "documents icon policy"
   teardown_sandbox
 }
 
