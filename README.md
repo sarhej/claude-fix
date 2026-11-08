@@ -407,8 +407,17 @@ The profile then runs from its own copy of Claude.app in `~/.claude-fix/apps`. T
 is an unmodified APFS clone, so it takes almost no disk space and keeps Anthropic's
 signature: sign-in, passkeys and the keychain work as usual. Its icon is set the way
 Finder's Get Info does it, which leaves the signed files alone. After Claude updates,
-the launcher refreshes the copy before opening the profile. Keep the launcher in the
-Dock rather than the copy: the copy alone doesn't know which profile to open.
+the launcher refreshes the copy before opening the profile.
+
+If the profile is pinned, its Dock tile moves to the copy, so the Dock shows one tile for
+it instead of the launcher plus the running app. The Dock opens a pinned app without
+saying which profile to use, which would start the copy in your default Claude account.
+A small watcher (`~/.claude-fix/watcher`, run by launchd from
+`~/Library/LaunchAgents/com.github.sarhej.claude-fix.watch.plist`) catches that: it
+stops a copy that started without its profile and opens the profile through its launcher.
+macOS lists it under Login Items & Extensions as a background item. It is built with
+`swiftc`, so it needs the Command Line Tools; without them the launcher stays pinned. It
+is removed with the last own-app profile or by `clean`.
 
 ### Updating
 
@@ -712,7 +721,7 @@ data.
 bash tests/run_tests.sh
 ```
 
-The suite takes about **30–60 seconds** on macOS (101 tests). Run it directly.
+The suite takes about **30–60 seconds** on macOS (104 tests). Run it directly.
 Piping through `tail` or `grep` buffers output and can look hung until it finishes.
 Progress is mirrored to stderr when stdout is piped.
 

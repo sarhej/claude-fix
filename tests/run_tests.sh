@@ -424,7 +424,7 @@ test_launcher_applescript_payload() {
   assert_contains "$decompiled" "launch" "AppleScript asks the helper to launch"
   assert_contains "$(cat "$app/Contents/Resources/focus.js")" "rapp" "focus sends a reopen event"
   marker="$(cat "$app/Contents/Resources/claude-fix-generated")"
-  assert_contains "$marker" "launcher-version=7" "marker records launcher version"
+  assert_contains "$marker" "launcher-version=8" "marker records launcher version"
   assert_contains "$marker" "data-dir=ClaudeWork" "marker records data dir"
   assert_contains "$marker" "claude-app=$CLAUDE_LAUNCHERS_CLAUDE_APP" "marker records Claude path"
   assert_contains "$marker" "kind=launcher" "marker records kind"
@@ -1128,7 +1128,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_contains "$out" "Upgrading 2 launcher(s)" "reports upgrade"
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix.sh" "Work has runtime helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=7" "Work marker upgraded"
+    "launcher-version=8" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix.sh" "Personal has runtime helper"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "upgrade adds the picker"
   teardown_sandbox
@@ -1151,7 +1151,7 @@ test_outdated_launchers_prompt_upgrade() {
   assert_contains "$out" "Updating 2 launcher(s) from an older version" "migrates without asking"
   assert_contains "$out" "Claude Profile Switcher is already set up" "then shows the menu"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=7" "Work is current"
+    "launcher-version=8" "Work is current"
   assert_file_exists "$HOME/Applications/Claude Profiles.app/Contents/Resources/claude-fix.sh" "picker added"
   assert_file_exists "$HOME/ClaudeWork/Cookies" "sign-in kept"
   assert_true "old Desktop copy became a shortcut" test -L "$HOME/Desktop/Claude Work.app"
@@ -1701,9 +1701,9 @@ test_launcher_upgrades_itself_after_update() {
   local picker="$HOME/Applications/Claude Profiles.app/Contents/Resources"
   assert_contains "$(cat "$marker")" "claude-fix-path=$SCRIPT" "launcher records the claude-fix command"
   assert_contains "$(cat "$picker/claude-fix-generated")" "claude-fix-path=$SCRIPT" "picker records it too"
-  assert_eq "7" "$(capture_script launcher-version)" "launcher-version command"
+  assert_eq "8" "$(capture_script launcher-version)" "launcher-version command"
   local newer="$SANDBOX/newer-claude-fix"
-  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 8 ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
+  printf '#!/bin/bash\ncase "$1" in launcher-version) echo 9 ;; upgrade) echo "upgrade $*" >>"%s" ;; esac\n' \
     "$SANDBOX/upgrades.log" >"$newer"
   chmod +x "$newer"
   : >"$SANDBOX/upgrades.log"
@@ -1732,7 +1732,7 @@ test_background_upgrade_is_quiet_and_locked() {
   rmdir "$HOME/.claude-fix/upgrade.lock"
   capture_script upgrade --background >/dev/null
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=7" "migrated"
+    "launcher-version=8" "migrated"
   assert_file_missing "$HOME/.claude-fix/upgrade.lock" "lock released"
   teardown_sandbox
 }
@@ -1799,6 +1799,80 @@ test_own_app_rename_off_clean() {
   assert_eq "1" "$code" "experiment needs a subcommand"
   assert_contains "$out" "experiment on|off|status" "shows usage"
   teardown_sandbox
+}
+
+install_fake_watcher() {
+  printf '#!/bin/bash\nexit 0\n' >"$SANDBOX/fake-watcher"
+  chmod +x "$SANDBOX/fake-watcher"
+  export CLAUDE_LAUNCHERS_WATCHER="$SANDBOX/fake-watcher"
+}
+
+test_own_app_dock_tile() {
+  test_start "own-app profiles move their Dock tile to the copy and back, with the watcher"
+  setup_sandbox
+  create_mock_claude_bundle
+  create_mock_dock_plist
+  install_fake_watcher
+  capture_script create Work Personal >/dev/null
+  local launcher="$HOME/Applications/Claude Work.app"
+  local clone="$HOME/.claude-fix/apps/ClaudeWork/Claude Work.app"
+  local agent="$HOME/Library/LaunchAgents/com.github.sarhej.claude-fix.watch.plist"
+  dock_add_claude_pin "$launcher"
+  local out
+  out="$(capture_script experiment on Work)"
+  assert_contains "$out" "keeps that click in Claude Work" "reports the Dock tile move"
+  assert_eq "$(dock_file_url_via_script "$clone")" "$(dock_persistent_urls)" "the tile opens the copy"
+  assert_eq "$launcher" "$(cat "$HOME/.claude-fix/apps/ClaudeWork/launcher")" "the copy knows its launcher"
+  assert_file_exists "$agent" "watcher agent installed"
+  assert_contains "$(cat "$agent")" "$SANDBOX/fake-watcher" "agent runs the watcher"
+  assert_contains "$(cat "$agent")" "$HOME/.claude-fix/apps" "watcher watches the copies"
+  assert_contains "$(capture_script experiment status Work)" "Dock watcher: installed" "status shows the watcher"
+
+  capture_script rename Work Acme >/dev/null
+  local acme="$HOME/.claude-fix/apps/ClaudeWork/Claude Acme.app"
+  assert_file_exists "$acme" "copy renamed right away"
+  assert_eq "$(dock_file_url_via_script "$acme")" "$(dock_persistent_urls)" "tile follows the rename"
+  assert_eq "$HOME/Applications/Claude Acme.app" "$(cat "$HOME/.claude-fix/apps/ClaudeWork/launcher")" \
+    "the copy knows its renamed launcher"
+
+  capture_script experiment off Acme >/dev/null
+  assert_eq "$(dock_file_url_via_script "$HOME/Applications/Claude Acme.app")" "$(dock_persistent_urls)" \
+    "off puts the launcher back in the same tile"
+  assert_file_missing "$agent" "watcher removed with the last own-app profile"
+  dock_assert_valid_entries
+  teardown_sandbox
+}
+
+test_own_app_without_watcher_keeps_launcher() {
+  test_start "without the watcher the launcher stays pinned, and a later run moves it"
+  setup_sandbox
+  create_mock_claude_bundle
+  create_mock_dock_plist
+  capture_script create Work >/dev/null
+  local launcher="$HOME/Applications/Claude Work.app"
+  dock_add_claude_pin "$launcher"
+  local out
+  out="$(capture_script experiment on Work)"
+  assert_contains "$out" "needs the Command Line Tools" "explains why the tile stays"
+  assert_eq "$(dock_file_url_via_script "$launcher")" "$(dock_persistent_urls)" "launcher stays pinned"
+  install_fake_watcher
+  capture_script create Work >/dev/null
+  assert_eq "$(dock_file_url_via_script "$HOME/.claude-fix/apps/ClaudeWork/Claude Work.app")" \
+    "$(dock_persistent_urls)" "the next run moves the tile to the copy"
+  capture_script clean >/dev/null
+  assert_file_missing "$HOME/Library/LaunchAgents/com.github.sarhej.claude-fix.watch.plist" "clean removes the watcher"
+  assert_file_missing "$HOME/.claude-fix/own-app/ClaudeWork" "clean forgets own-app mode"
+  teardown_sandbox
+}
+
+test_watcher_source_is_bundled() {
+  test_start "the Dock watcher ships inside the script"
+  local src
+  src="$(HOME="${TMPDIR:-/tmp}" "$BASH" -c 'source "$1"; watcher_source' _ "$SCRIPT")"
+  assert_contains "$src" "KERN_PROCARGS2" "reads a process's arguments"
+  assert_contains "$src" "--user-data-dir=" "lets a launch with a profile through"
+  assert_contains "$src" "SIGKILL" "stops a launch without one"
+  assert_contains "$src" "claude-fix.sh" "reopens through the launcher"
 }
 
 test_link_experiment_migrates_to_own_app() {
@@ -1932,6 +2006,9 @@ main() {
   test_own_app_copy
   test_own_app_rename_off_clean
   test_link_experiment_migrates_to_own_app
+  test_own_app_dock_tile
+  test_own_app_without_watcher_keeps_launcher
+  test_watcher_source_is_bundled
 
   print_summary
 }

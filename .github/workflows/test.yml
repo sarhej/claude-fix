@@ -44,6 +44,13 @@ jobs:
           osacompile -l JavaScript -o "$tmp/focus.scpt" "$tmp/focus.js"
           osacompile -l JavaScript -o "$tmp/claim.scpt" "$tmp/claim.js"
 
+      - name: Build the Dock watcher
+        run: |
+          tmp=$(mktemp -d)
+          /bin/bash -c 'source ./claude-fix; watcher_source' >"$tmp/watch.swift"
+          swiftc -O -o "$tmp/claude-fix-watch" "$tmp/watch.swift"
+          test -x "$tmp/claude-fix-watch"
+
       - name: Check the icon tool
         run: |
           tmp=$(mktemp -d)

@@ -147,7 +147,7 @@ setup_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
-    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_MOCK_ARGS_LOG 2>/dev/null || true
+    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_LAUNCHERS_WATCHER CLAUDE_MOCK_ARGS_LOG 2>/dev/null || true
 }
 
 teardown_sandbox() {
@@ -170,7 +170,7 @@ teardown_sandbox() {
     CLAUDE_LAUNCHERS_ALLOW_QUIT_DUPES \
     CLAUDE_LAUNCHERS_ICON_ANSWER CLAUDE_LAUNCHERS_ICON_COLOR_ANSWER \
     CLAUDE_LAUNCHERS_ICON_TOOL FAKE_ICON_LOG CLAUDE_LAUNCHERS_EDIT_CHOICE \
-    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_MOCK_ARGS_LOG MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
+    CLAUDE_LAUNCHERS_NEW_NAME CLAUDE_LAUNCHERS_WATCHER CLAUDE_MOCK_ARGS_LOG MOCK_CLAUDE_PID CLAUDE_MOCK_LAUNCHED_MARKER ORIGINAL_PATH
 }
 
 # Minimal fake Claude.app with an icon resource.
@@ -276,7 +276,7 @@ create_generated_launcher() {
   touch "$app/Contents/Resources/applet.icns"
   printf '#!/bin/bash\nexit 0\n' >"$app/Contents/Resources/claude-fix.sh"
   chmod +x "$app/Contents/Resources/claude-fix.sh"
-  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=7\n' "$label" >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=launcher\nlabel=%s\nlauncher-version=8\n' "$label" >"$app/$MARKER_REL"
   create_generated_picker
 }
 
@@ -285,7 +285,7 @@ create_generated_picker() {
   local app="$HOME/Applications/Claude Profiles.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   touch "$app/Contents/MacOS/applet"
-  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=7\n' >"$app/$MARKER_REL"
+  printf 'generated-by=claude-fix\nkind=picker\nlauncher-version=8\n' >"$app/$MARKER_REL"
 }
 
 # Old v1-style launcher (always open -n; no focus helper) for upgrade tests.

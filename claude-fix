@@ -22,7 +22,7 @@ MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/claude-fix.sh"
 # v7: shared runtime helper, reopen via Apple event, signed bundles, profile picker that
 # also runs follow-up work, Claude-style icons, self-upgrade, optional own-app copies
-LAUNCHER_VERSION=7
+LAUNCHER_VERSION=8
 ICON_COUNT=8
 # Badge symbols and colors for `icon`; these match icons/glyphs.json.
 SYMBOL_NAMES="work personal home code star heart book globe bolt leaf moon chat"
@@ -1484,6 +1484,9 @@ own_app_sync() {
     printf '%s\n' "$stamp" >"$dir/source.stamp"
     rm -f "$dir/icon.sum"
   fi
+  # The Dock watcher opens a copy started without its profile through this launcher.
+  [ "$(cat "$dir/launcher" 2>/dev/null)" = "$APPS/Claude $label.app" ] ||
+    printf '%s\n' "$APPS/Claude $label.app" >"$dir/launcher"
   if [ -f "$icon" ]; then
     sum=$(cksum <"$icon" | awk '{print $1}')
     if [ "$sum" != "$(cat "$dir/icon.sum" 2>/dev/null)" ] || [ ! -e "$dest/Icon"$'\r' ]; then
@@ -1946,6 +1949,7 @@ migrate_launchers() {
     fi
   done
   if [ "${#outdated[@]}" -eq 0 ] && picker_is_current; then
+    migrate_own_apps
     return 0
   fi
   ensure_claude_app >/dev/null 2>&1 || return 0
@@ -1963,6 +1967,20 @@ migrate_launchers() {
   fi
   picker_is_current || install_picker >/dev/null
   load_generated_launchers
+  migrate_own_apps
+}
+
+# Own-app profiles from before the Dock watcher keep their launcher pinned; move the tile
+# to the copy and keep the watcher built from this version.
+migrate_own_apps() {
+  local i dir
+  any_own_app || return 0
+  for ((i = 0; i < ${#GENERATED_APPS[@]}; i++)); do
+    dir=$(marker_value "${GENERATED_APPS[$i]}/$MARKER_FILE" "data-dir")
+    if [ -n "$dir" ] && [ -f "$(own_app_file "$dir")" ]; then
+      own_app_apply "${GENERATED_APPS[$i]}" || true
+    fi
+  done
 }
 
 # Called by a launcher, in the background, when the installed claude-fix is newer.
@@ -2091,6 +2109,240 @@ profile_running_pid() {
   return 1
 }
 
+# A Dock tile opens its app with no arguments, so a pinned own-app copy would start in the
+# default Claude account. This small agent notices a copy that started that way, stops it
+# before it gets going, and opens the profile the way its launcher does.
+WATCH_LABEL="$BUNDLE_ID_PREFIX.watch"
+
+watch_agent_plist() {
+  printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$WATCH_LABEL"
+}
+
+watcher_source() {
+  cat <<'SWIFT'
+import AppKit
+
+// Keeps a Dock click on an own-app copy of Claude in its own profile. Started by launchd.
+let root = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1]
+  : NSHomeDirectory() + "/.claude-fix/apps").standardizedFileURL.path + "/"
+var handled = Set<pid_t>()
+
+// A process's executable and arguments.
+func processInfo(_ pid: pid_t) -> (exe: String, args: [String])? {
+  var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+  var size = 0
+  guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
+  var buf = [UInt8](repeating: 0, count: size)
+  guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > 4 else { return nil }
+  let argc = Int(buf.withUnsafeBytes { $0.load(as: Int32.self) })
+  var i = 4
+  func string() -> String {
+    let start = i
+    while i < size && buf[i] != 0 { i += 1 }
+    return String(decoding: buf[start..<i], as: UTF8.self)
+  }
+  let exe = string()
+  while i < size && buf[i] == 0 { i += 1 }
+  var args: [String] = []
+  while args.count < argc && i < size {
+    args.append(string())
+    i += 1
+  }
+  return (exe, args)
+}
+
+func check(_ app: NSRunningApplication, tries: Int = 0) {
+  guard let url = app.bundleURL else { return }
+  let copy = url.standardizedFileURL.path
+  // Only the copies themselves (apps/<profile>/<name>.app), not their helper apps.
+  guard copy.hasPrefix(root), copy.dropFirst(root.count).split(separator: "/").count == 2 else { return }
+  let pid = app.processIdentifier
+  if pid > 0 && handled.contains(pid) { return }
+  // Right after launch the process can still be the launch stub; wait for Claude itself.
+  guard pid > 0, let info = processInfo(pid), info.exe.hasPrefix(copy + "/Contents/MacOS/") else {
+    if tries < 150 && !app.isTerminated {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { check(app, tries: tries + 1) }
+    }
+    return
+  }
+  handled.insert(pid)
+  if info.args.contains(where: { $0.hasPrefix("--user-data-dir=") }) { return }
+  kill(pid, SIGKILL)
+  let file = (copy as NSString).deletingLastPathComponent + "/launcher"
+  guard let launcher = try? String(contentsOfFile: file, encoding: .utf8)
+    .trimmingCharacters(in: .whitespacesAndNewlines), !launcher.isEmpty else { return }
+  let task = Process()
+  task.executableURL = URL(fileURLWithPath: "/bin/bash")
+  task.arguments = [launcher + "/Contents/Resources/claude-fix.sh", "launch"]
+  try? task.run()
+}
+
+let workspace = NSWorkspace.shared
+func scan() {
+  for app in workspace.runningApplications { check(app) }
+}
+let observation = workspace.observe(\.runningApplications, options: [.initial, .new]) { _, _ in
+  DispatchQueue.main.async { scan() }
+}
+let center = workspace.notificationCenter
+center.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { _ in
+  scan()
+}
+center.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { note in
+  if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+    handled.remove(app.processIdentifier)
+  }
+}
+let application = NSApplication.shared
+_ = application.setActivationPolicy(.prohibited)
+withExtendedLifetime(observation) { application.run() }
+SWIFT
+}
+
+xml_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+# Builds the watcher with swiftc and runs it as a launch agent. Returns 1 when it can't.
+install_watcher() {
+  local dest="$STATE_DIR/watcher" bin src sum plist new reload=0
+  if [ -n "${CLAUDE_LAUNCHERS_WATCHER:-}" ]; then
+    bin="$CLAUDE_LAUNCHERS_WATCHER"
+    [ -x "$bin" ] || return 1
+  else
+    [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && return 1
+    bin="$dest/claude-fix-watch"
+    src=$(watcher_source)
+    sum=$(printf '%s\n' "$src" | cksum | awk '{print $1}')
+    if [ ! -x "$bin" ] || [ "$(cat "$dest/source.sum" 2>/dev/null)" != "$sum" ]; then
+      dev_tool_ready swiftc || return 1
+      mkdir -p "$dest"
+      printf '%s\n' "$src" >"$dest/watch.swift"
+      if ! swiftc -O -o "$bin.new" "$dest/watch.swift" >/dev/null 2>&1; then
+        rm -f "$bin.new"
+        return 1
+      fi
+      mv -f "$bin.new" "$bin"
+      printf '%s\n' "$sum" >"$dest/source.sum"
+      reload=1
+    fi
+  fi
+  plist=$(watch_agent_plist)
+  new=$(printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict>' \
+    "<key>Label</key><string>$WATCH_LABEL</string>" \
+    "<key>ProgramArguments</key><array><string>$(xml_escape "$bin")</string><string>$(xml_escape "$STATE_DIR/apps")</string></array>" \
+    '<key>RunAtLoad</key><true/>' \
+    '<key>KeepAlive</key><true/>' \
+    '<key>LimitLoadToSessionType</key><string>Aqua</string>' \
+    '<key>ProcessType</key><string>Interactive</string>' \
+    '</dict></plist>')
+  if [ "$new" != "$(cat "$plist" 2>/dev/null)" ]; then
+    mkdir -p "$(dirname "$plist")"
+    printf '%s\n' "$new" >"$plist"
+    reload=1
+  fi
+  [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && return 0
+  if [ "$reload" = "1" ] || ! launchctl print "gui/$(id -u)/$WATCH_LABEL" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/$WATCH_LABEL" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || return 1
+  fi
+}
+
+remove_watcher() {
+  local plist
+  plist=$(watch_agent_plist)
+  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+    launchctl bootout "gui/$(id -u)/$WATCH_LABEL" >/dev/null 2>&1 || true
+  fi
+  rm -f "$plist"
+  rm -rf "$STATE_DIR/watcher"
+}
+
+any_own_app() {
+  local f
+  for f in "$STATE_DIR/own-app/"*; do
+    [ -f "$f" ] && return 0
+  done
+  return 1
+}
+
+# Points a profile's Dock tile, if it has one, at its copy while the watcher is running,
+# and at its launcher otherwise. The tile keeps its place.
+sync_own_app_dock() {
+  local launcher="$1" clone="$2" target="$3" plist out
+  dock_changes_disabled && return 0
+  dev_tool_ready python3 || return 0
+  plist=$(dock_plist_path)
+  [ -f "$plist" ] || return 0
+  out=$(python3 - "$plist" "$target" "$launcher" "$clone" <<'PY'
+import os, plistlib, sys, urllib.parse, uuid
+
+def url_for(path):
+    path = os.path.abspath(path).rstrip("/") + "/"
+    return "file://" + urllib.parse.quote(path, safe="/")
+
+def same(a, b):
+    return urllib.parse.unquote(a or "").rstrip("/").lower() == urllib.parse.unquote(b or "").rstrip("/").lower()
+
+plist, target, paths = sys.argv[1], sys.argv[2], sys.argv[2:]
+label = os.path.basename(target)[:-len(".app")]
+with open(plist, "rb") as fh:
+    data = plistlib.load(fh)
+apps = data.get("persistent-apps", [])
+hits = [i for i, e in enumerate(apps)
+        if any(same(e.get("tile-data", {}).get("file-data", {}).get("_CFURLString", ""), url_for(p)) for p in paths if p)
+        or e.get("tile-data", {}).get("file-label") == label]
+if not hits:
+    print("none")
+    raise SystemExit
+want = url_for(target)
+if len(hits) == 1 and same(apps[hits[0]]["tile-data"]["file-data"].get("_CFURLString", ""), want):
+    print("same")
+    raise SystemExit
+stat, parent = os.stat(target), os.stat(os.path.dirname(target))
+tile = {
+    "tile-type": "file-tile",
+    "GUID": str(uuid.uuid4()).upper(),
+    "tile-data": {
+        "file-data": {"_CFURLString": want, "_CFURLStringType": 15},
+        "file-label": label,
+        "file-type": 41,
+        "file-mod-date": int(stat.st_mtime + 2082844800),
+        "parent-mod-date": int(parent.st_mtime + 2082844800),
+        "dock-extra": False,
+        "is-beta": False,
+    },
+}
+apps[hits[0]] = tile
+for i in reversed(hits[1:]):
+    del apps[i]
+with open(plist, "wb") as fh:
+    plistlib.dump(data, fh)
+print("changed")
+PY
+  ) || return 0
+  [ "$out" = "changed" ] && dock_restart
+  return 0
+}
+
+# Brings one own-app profile in line: its copy, the watcher, and its Dock tile.
+own_app_apply() {
+  local app="$1" dir clone="" target
+  dir=$(marker_value "$app/$MARKER_FILE" "data-dir")
+  target="$app"
+  if [ -n "$dir" ] && [ -f "$(own_app_file "$dir")" ]; then
+    clone=$(/bin/bash "$app/$LAUNCH_SCRIPT_REL" own-app-sync 2>/dev/null) || clone=""
+    if [ -n "$clone" ] && install_watcher; then
+      target="$clone"
+    fi
+  fi
+  sync_own_app_dock "$app" "$clone" "$target"
+  [ "$target" != "$app" ]
+}
+
 own_app_file() {
   printf '%s/own-app/%s' "$STATE_DIR" "$1"
 }
@@ -2131,6 +2383,9 @@ experiment_setup() {
     else
       echo "Claude $label: runs from Claude.app (sign-in in ~/$dir)"
     fi
+    if [ -f "$(watch_agent_plist)" ]; then
+      echo "  Dock watcher: installed"
+    fi
     if pid=$(profile_running_pid "$HOME/$dir"); then
       echo "  running: pid $pid, $(ps -o args= -p "$pid" 2>/dev/null | awk '{print $1}')"
     else
@@ -2147,7 +2402,9 @@ experiment_setup() {
   mkdir -p "$STATE_DIR/own-app"
   if [ "$sub" = "off" ]; then
     rm -f "$(own_app_file "$dir")"
+    own_app_apply "$app" || true
     rm -rf "$STATE_DIR/apps/$dir"
+    any_own_app || remove_watcher
     echo "Claude $label runs from Claude.app again."
     return 0
   fi
@@ -2160,7 +2417,13 @@ experiment_setup() {
   fi
   echo "Claude $label now runs from its own copy of Claude:"
   echo "  $clone"
-  echo "Open it with its launcher. The Dock and the app switcher should show its icon."
+  if own_app_apply "$app"; then
+    echo "The Dock and the app switcher show its icon. If it's pinned, its Dock tile now"
+    echo "opens the copy, and a watcher keeps that click in Claude $label."
+  else
+    echo "The Dock and the app switcher show its icon. A pinned launcher stays pinned, since"
+    echo "the Dock watcher needs the Command Line Tools (run: xcode-select --install)."
+  fi
   echo "Undo with: $0 experiment off \"$label\""
 }
 
@@ -2415,6 +2678,7 @@ rename_setup() {
     dock_remove_app_pins "$old_app" "$plist" >/dev/null
     pin_launchers_to_dock 0 "$new_app" >/dev/null || true
   fi
+  [ -f "$(own_app_file "$dir")" ] && { own_app_apply "$new_app" || true; }
   echo "Renamed Claude $old to Claude $new. Its sign-in stays in ~/$dir."
 }
 
@@ -2914,6 +3178,7 @@ clean_setup() {
     rm -rf "$app"
     remove_desktop_shortcut "$base"
     rm -rf "$STATE_DIR/apps/$dir"
+    rm -f "$(own_app_file "$dir")"
 
     if [ "$purge" = "1" ]; then
       if [ -d "$data" ]; then
@@ -2938,6 +3203,7 @@ clean_setup() {
     fi
   done
   shopt -u nullglob
+  any_own_app || remove_watcher
 
   if [ -f "$PICKER_APP/$MARKER_FILE" ]; then
     found=1
