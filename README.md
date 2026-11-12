@@ -11,60 +11,29 @@
 
 ## Summary
 
-**claude-fix** is an open-source tool for running **multiple Claude Desktop
-accounts on one Mac** — for example **work and personal**, or **one profile per
-client** — without logging in and out or mixing chats, Gmail, Google Calendar,
-Drive, Slack, or other connected tools. It's a third-party utility, not
-affiliated with or endorsed by Anthropic.
+**claude-fix** runs **multiple Claude Desktop accounts on one Mac** — work and
+personal, or one profile per client — without logging in and out or mixing
+chats, Gmail, Google Calendar, Drive, Slack, or other connected tools.
+Third-party utility, not affiliated with or endorsed by Anthropic.
 
-It creates separate launcher apps (e.g. `Claude Work.app`, `Claude Personal.app`)
-in `~/Applications`, each with its own login, history, settings, and
-integrations. Launchers can be **pinned to the Dock** with **distinct icons**
-(briefcase = work, person = personal, letter = custom profile). The real
-`Claude.app` is never modified.
-
-**Quick install (macOS Terminal):**
+It creates dock-friendly launchers (e.g. `Claude Work.app`,
+`Claude Personal.app`) in `~/Applications`, each with its own login, history,
+settings, and integrations. Icons are **original** artwork from this repo (not
+Anthropic branding). The real `Claude.app` is never modified. `clean` removes
+the launchers and restores the normal single-app setup.
 
 ```bash
 brew install sarhej/claude-fix/claude-fix
 ```
 
-Homebrew is the recommended install — it works on managed/enterprise Macs where
-`curl … | bash` is blocked, pulls a pinned checksummed release, and bundles the
-profile icons locally (no runtime download). Prefer to inspect first or use
-`curl`? See [Installation](#installation).
+Homebrew is the recommended install (managed Macs, pinned checksummed release,
+icons bundled locally). Prefer to inspect first or use `curl`? See
+[Installation](#installation).
 
----
-
-Run separate **Work** and **Personal** Claude Desktop profiles on one Mac, each
-with its own login, chat history, settings, and connected tools.
-
-```bash
-brew install sarhej/claude-fix/claude-fix
-```
-
-The default setup keeps your **existing Claude login** as-is and creates only
-the missing second profile:
-
-- Your normal `Claude.app` stays on your current account (Work or Personal)
-- The script creates one new launcher for the other account, e.g.
-  `~/Applications/Claude Personal.app`
-- Optionally, a clickable copy on your Desktop
-
-When the new profile opens, sign in with your **other** account and connect the
-matching tools there.
-
-**Trust check:** this project is local-only, dependency-free, and covered by
-macOS integration tests in GitHub Actions. Review the source and test suite on
-GitHub before running if you want the full details.
-
-`make_claude_launchers.sh` creates separate, dock-friendly launchers for
-[Claude Desktop](https://claude.ai/download) — each with its **own login,
-chat history, settings, and connected tools**. Think *Work* vs *Personal*
-(different email, calendar, Slack, etc.), or one profile per client.
-
-It also includes a `clean` command to remove the generated launchers and restore
-your Mac to the standard single-app setup.
+Default setup keeps your **existing Claude login** and creates only the missing
+second profile. Sign into the other account in the new launcher and connect its
+tools there. Local-only, dependency-free, covered by macOS tests in GitHub
+Actions.
 
 ---
 
