@@ -188,6 +188,48 @@ Re-run the script → **Fix wrong account / start fresh** for that profile. This
 clears that launcher's local sign-in only, rebuilds its icon, and refreshes the
 Dock pin.
 
+### Can I hand off Claude Code CLI sessions (`/desktop`) to a claude-fix profile?
+
+Yes, if the CLI and the Desktop profile use the same Claude Code config
+directory. `--user-data-dir` only isolates Claude Desktop's own data (login,
+chats, settings). The Claude Code sessions a Desktop profile runs are stored in
+`CLAUDE_CONFIG_DIR`, which defaults to `~/.claude` for **every** launcher.
+
+If you run a second CLI with its own config dir, for example:
+
+```bash
+alias claude-personal='CLAUDE_CONFIG_DIR="$HOME/.claude-private" claude'
+```
+
+then `/desktop` in that CLI hands the session to Desktop, but Desktop looks for
+the transcript in `~/.claude/projects` and shows *"Couldn't open that session.
+Its transcript may have been removed."*
+
+Start the profile with the same `CLAUDE_CONFIG_DIR`. Edit the last line of the
+launcher's helper, e.g.
+`~/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh`:
+
+```bash
+exec open -n -a "$CLAUDE_APP" --env CLAUDE_CONFIG_DIR="$HOME/.claude-private" --args --user-data-dir="$DATA_DIR"
+```
+
+Editing a file inside the bundle invalidates the launcher's ad-hoc signature, so
+re-sign it, then quit that profile completely (⌘Q) and reopen it from the
+launcher:
+
+```bash
+codesign --force --deep -s - ~/Applications/Claude\ Personal.app
+```
+
+Notes:
+
+- Claude Code sessions created earlier in that Desktop profile stay in
+  `~/.claude/projects`. Move their project folders to the new config dir
+  (e.g. `~/.claude-private/projects`) if you want to keep them.
+- `create`, `upgrade`, and **start fresh** rebuild the launcher, so re-apply
+  the change afterwards.
+- The variable is only set when the profile is started through the launcher.
+
 ---
 
 ## Alternatives (and why claude-fix exists)
@@ -570,6 +612,10 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   moment or run `killall Dock`.
 - **Both profiles share data** — this only happens if your Claude build ignores
   `--user-data-dir`. Verify by signing into different accounts in each launcher.
+- **"Couldn't open that session. Its transcript may have been removed."** after
+  `/desktop` in the Claude Code CLI — the CLI and the Desktop profile use
+  different Claude Code config directories (`CLAUDE_CONFIG_DIR`). See
+  [Can I hand off Claude Code CLI sessions to a claude-fix profile?](#can-i-hand-off-claude-code-cli-sessions-desktop-to-a-claude-fix-profile)
 - **macOS Gatekeeper warning** — the launchers are locally generated and
   unsigned. Right-click → **Open** the first time if prompted.
 
