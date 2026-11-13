@@ -36,6 +36,8 @@ test_help() {
   assert_contains "$out" "--dock" "documents Dock pinning option"
   assert_contains "$out" "--dock-cleanup" "documents Dock cleanup option"
   assert_contains "$out" "upgrade" "documents upgrade command"
+  assert_contains "$out" "doctor" "documents doctor command"
+  assert_contains "$out" "--claude-config-dir" "documents Claude Code config option"
   assert_contains "$out" "existing Claude login" "documents existing profile model"
   assert_contains "$out" "original profile icons" "documents icon policy"
   teardown_sandbox
@@ -419,7 +421,7 @@ test_launcher_applescript_payload() {
   assert_contains "$launch_body" "Claude.app/Contents/MacOS/Claude" "matches only Claude binary"
   assert_not_contains "$launch_body" "exit }" "awk must not early-exit (SIGPIPE 141)"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=4" "marker records launcher version"
+    "launcher-version=5" "marker records launcher version"
   teardown_sandbox
 }
 
@@ -1099,6 +1101,80 @@ test_management_menu_cancel() {
   teardown_sandbox
 }
 
+test_claude_config_dir_on_create() {
+  test_start "create --claude-config-dir embeds env and CLI wrapper"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local cfg="$HOME/.claude-personal"
+  capture_script create --claude-config-dir "$cfg" Personal >/dev/null
+  local launch_sh="$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh"
+  local marker="$HOME/Applications/Claude Personal.app/Contents/Resources/claude-fix-generated"
+  local wrap="$HOME/.claude-fix/bin/claude-personal"
+  assert_file_exists "$launch_sh" "launch helper exists"
+  assert_contains "$(cat "$launch_sh")" "CLAUDE_CONFIG_DIR=" "sets CLAUDE_CONFIG_DIR on open"
+  assert_contains "$(cat "$launch_sh")" "$cfg" "embeds config path"
+  assert_contains "$(cat "$marker")" "claude-config-dir=$cfg" "marker stores config dir"
+  assert_true "config dir created" test -d "$cfg"
+  assert_file_exists "$wrap" "CLI wrapper installed"
+  assert_contains "$(cat "$wrap")" "CLAUDE_CONFIG_DIR=" "wrapper exports config dir"
+  assert_contains "$(cat "$wrap")" "exec claude" "wrapper runs claude"
+  teardown_sandbox
+}
+
+test_config_dir_command_and_clear() {
+  test_start "config-dir sets then clears Claude Code pairing"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local cfg="$HOME/.claude-work"
+  capture_script config-dir Work "$cfg" >/dev/null
+  local launch_sh="$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh"
+  local marker="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated"
+  assert_contains "$(cat "$launch_sh")" "$cfg" "config-dir embeds path"
+  assert_contains "$(cat "$marker")" "claude-config-dir=$cfg" "marker updated"
+  assert_file_exists "$HOME/.claude-fix/bin/claude-work" "wrapper created"
+  capture_script config-dir Work default >/dev/null
+  assert_not_contains "$(cat "$launch_sh")" "CLAUDE_CONFIG_DIR=" "cleared from launch helper"
+  assert_not_contains "$(cat "$marker")" "claude-config-dir=" "cleared from marker"
+  assert_file_missing "$HOME/.claude-fix/bin/claude-work" "wrapper removed"
+  teardown_sandbox
+}
+
+test_upgrade_preserves_claude_config_dir() {
+  test_start "upgrade keeps claude-config-dir from marker"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  local cfg="$HOME/.claude-keep"
+  capture_script create --claude-config-dir "$cfg" Work >/dev/null
+  # Force outdated marker version but keep config-dir line
+  local marker="$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated"
+  printf 'generated-by=claude-fix\nlabel=Work\ndata-dir=ClaudeWork\nlauncher-version=4\nclaude-config-dir=%s\n' \
+    "$cfg" >"$marker"
+  capture_script upgrade --no-quit-duplicates >/dev/null
+  assert_contains "$(cat "$marker")" "claude-config-dir=$cfg" "config dir preserved"
+  assert_contains "$(cat "$marker")" "launcher-version=5" "helper upgraded"
+  assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" \
+    "$cfg" "launch helper still pairs Code config"
+  teardown_sandbox
+}
+
+test_doctor_and_version() {
+  test_start "doctor and version report install health"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create --claude-config-dir "$HOME/.claude-personal" Personal >/dev/null
+  local ver doctor
+  ver="$(capture_script version)"
+  assert_contains "$ver" "claude-fix 1.3.0" "version prints script version"
+  assert_contains "$ver" "launcher-helper-version=5" "version prints helper version"
+  doctor="$(capture_script doctor)"
+  assert_contains "$doctor" "Claude Personal" "doctor lists profile"
+  assert_contains "$doctor" "Code config:" "doctor shows Code config"
+  assert_contains "$doctor" ".claude-personal" "doctor shows config path"
+  assert_contains "$doctor" "All launchers are on helper v5" "doctor healthy"
+  teardown_sandbox
+}
+
 test_upgrade_rebuilds_outdated_launchers() {
   test_start "upgrade rebuilds outdated launchers with focus helper"
   setup_sandbox
@@ -1111,7 +1187,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "Work has launch helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" "frontmost" "Work focuses existing"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=4" "Work marker upgraded"
+    "launcher-version=5" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh" "Personal has launch helper"
   teardown_sandbox
 }
@@ -1304,6 +1380,10 @@ main() {
   test_management_menu_open_launchers_folder
   test_management_menu_clean_keep_data
   test_management_menu_clean_purge
+  test_claude_config_dir_on_create
+  test_config_dir_command_and_clear
+  test_upgrade_preserves_claude_config_dir
+  test_doctor_and_version
   test_non_macos_rejected
 
   print_summary
