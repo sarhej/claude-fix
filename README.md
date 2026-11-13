@@ -159,45 +159,43 @@ Dock pin.
 
 ### Can I hand off Claude Code CLI sessions (`/desktop`) to a claude-fix profile?
 
-Yes, if the CLI and the Desktop profile use the same Claude Code config
-directory. `--user-data-dir` only isolates Claude Desktop's own data (login,
-chats, settings). The Claude Code sessions a Desktop profile runs are stored in
-`CLAUDE_CONFIG_DIR`, which defaults to `~/.claude` for **every** launcher.
+Yes. Pair the Desktop launcher with a Claude Code config directory so both use
+the same `CLAUDE_CONFIG_DIR`. `--user-data-dir` only isolates Claude Desktop
+(login, chats, settings). Without a paired config dir, every launcher shares
+`~/.claude`, and `/desktop` from a private CLI can show *"Couldn't open that
+session. Its transcript may have been removed."*
 
-If you run a second CLI with its own config dir, for example:
-
-```bash
-alias claude-personal='CLAUDE_CONFIG_DIR="$HOME/.claude-private" claude'
-```
-
-then `/desktop` in that CLI hands the session to Desktop, but Desktop looks for
-the transcript in `~/.claude/projects` and shows *"Couldn't open that session.
-Its transcript may have been removed."*
-
-Start the profile with the same `CLAUDE_CONFIG_DIR`. Edit the last line of the
-launcher's helper, e.g.
-`~/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh`:
+**Create with pairing** (also installs `~/.claude-fix/bin/claude-personal`):
 
 ```bash
-exec open -n -a "$CLAUDE_APP" --env CLAUDE_CONFIG_DIR="$HOME/.claude-private" --args --user-data-dir="$DATA_DIR"
+claude-fix create --claude-config-dir ~/.claude-personal Personal
+# or from a clone:
+./make_claude_launchers.sh create --claude-config-dir ~/.claude-personal Personal
 ```
 
-Editing a file inside the bundle invalidates the launcher's ad-hoc signature, so
-re-sign it, then quit that profile completely (⌘Q) and reopen it from the
-launcher:
+**Set or clear on an existing launcher:**
 
 ```bash
-codesign --force --deep -s - ~/Applications/Claude\ Personal.app
+claude-fix config-dir Personal ~/.claude-personal
+claude-fix config-dir Personal default   # back to shared ~/.claude
 ```
+
+Add wrappers to your shell, then use the CLI for that account:
+
+```bash
+export PATH="$HOME/.claude-fix/bin:$PATH"
+claude-personal   # same as: CLAUDE_CONFIG_DIR=~/.claude-personal claude
+```
+
+Quit the Desktop profile (⌘Q) and reopen it from the launcher after changing
+the config dir. `upgrade` keeps the pairing. Check with `claude-fix doctor`.
 
 Notes:
 
-- Claude Code sessions created earlier in that Desktop profile stay in
-  `~/.claude/projects`. Move their project folders to the new config dir
-  (e.g. `~/.claude-private/projects`) if you want to keep them.
-- `create`, `upgrade`, and **start fresh** rebuild the launcher, so re-apply
-  the change afterwards.
-- The variable is only set when the profile is started through the launcher.
+- Move existing Code project folders into the new config dir
+  (e.g. `~/.claude-personal/projects`) if you want to keep them.
+- Prefer one `--claude-config-dir` per `create` invocation (one label) so Work
+  and Personal can use different folders.
 
 ---
 
@@ -209,7 +207,9 @@ Notes:
 | One browser + one Desktop app | Integrations and chats still mixed per app |
 | Multiple Mac user accounts | Heavy; separate desktops, not one workflow |
 | Duplicate `Claude.app` bundles manually | Breaks on updates; no Dock/icon tooling |
-| **claude-fix launchers** | Separate logins, tools, Dock icons; updates `Claude.app` normally |
+| Paid / closed Mac apps | Less inspectable; often rebrand Claude icons |
+| npm multi-tools (Desktop + Code) | Extra Node dependency; heavier install |
+| **claude-fix** | Free MIT; brew; original icons; never modifies Claude.app; optional Code pairing via `--claude-config-dir` |
 
 ---
 
@@ -414,7 +414,11 @@ launchers focus the existing window for that profile and quit extras.
 | `create --no-dock [labels...]` | Do not change the Dock. |
 | `create --dock-cleanup` | With `--dock`, remove duplicate `Claude.app` Dock pins first. |
 | `create --yes` | Skip menu; assumes existing Work, creates Personal. |
+| `create --claude-config-dir <path>` | Pair Desktop with a Claude Code config dir; install CLI wrapper. |
+| `config-dir <label> <path or default>` | Set or clear Code pairing on an existing launcher. |
 | `upgrade` | Rebuild all launchers (focus-if-open) and quit duplicate Claude windows. |
+| `doctor` | Report Claude.app, launchers, Code config dirs, wrappers, outdated helpers. |
+| `version` | Print script and launcher-helper versions. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
 | `help` | Print usage. |
@@ -585,8 +589,8 @@ use the pinned **launcher** icons in the Dock to open the right profile.
   `/desktop` in the Claude Code CLI — the CLI and the Desktop profile use
   different Claude Code config directories (`CLAUDE_CONFIG_DIR`). See
   [Can I hand off Claude Code CLI sessions to a claude-fix profile?](#can-i-hand-off-claude-code-cli-sessions-desktop-to-a-claude-fix-profile)
-- **macOS Gatekeeper warning** — the launchers are locally generated and
-  unsigned. Right-click → **Open** the first time if prompted.
+- **macOS Gatekeeper warning** — launchers are generated locally and ad-hoc
+  signed. Right-click → **Open** the first time if prompted.
 
 ---
 
@@ -667,6 +671,19 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.3.0 — 2026-11-13
+
+**Desktop ↔ Claude Code pairing**
+
+- `create --claude-config-dir <path>` sets `CLAUDE_CONFIG_DIR` on the launcher
+  and installs a CLI wrapper under `~/.claude-fix/bin` (e.g. `claude-personal`)
+- `config-dir <label> <path|default>` updates or clears pairing on an existing
+  profile; `upgrade` keeps it
+- `doctor` and `version` for install health
+- Launcher helper v5; ad-hoc codesign after rebuild (skipped in tests)
+
+---
 
 ### v1.2.2 — 2026-07-16
 

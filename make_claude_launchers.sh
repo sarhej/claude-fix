@@ -13,6 +13,8 @@
 #   ./make_claude_launchers.sh create --launch Work Personal
 #   ./make_claude_launchers.sh clean                 # remove launchers, keep data
 #   ./make_claude_launchers.sh clean --purge         # remove launchers AND data
+#   ./make_claude_launchers.sh create --claude-config-dir ~/.claude-personal Personal
+#   ./make_claude_launchers.sh doctor
 #   ./make_claude_launchers.sh help
 #
 set -euo pipefail
@@ -20,13 +22,19 @@ set -euo pipefail
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/launch-profile.sh"
+# Release version of this script (Homebrew formula / tags).
+SCRIPT_VERSION="1.3.0"
+# v5 = optional CLAUDE_CONFIG_DIR on open (Desktop ↔ Claude Code handoff)
 # v4 = focus only real Claude.app processes (not awk/ps false positives); fall through if focus fails
-LAUNCHER_VERSION=4
+LAUNCHER_VERSION=5
 ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
 GENERATED_DIRS=()
 CLAUDE_APP=""
+# When 1, CREATE_CLAUDE_CONFIG_DIR (may be empty) overrides any previous marker value.
+CREATE_CLAUDE_CONFIG_DIR_SET=0
+CREATE_CLAUDE_CONFIG_DIR=""
 
 script_dir() {
   local src="${BASH_SOURCE[0]:-}"
@@ -699,6 +707,59 @@ shell_quote() {
   printf "'%s'" "$escaped"
 }
 
+# Expand a leading ~ to $HOME; leave absolute and relative paths as-is.
+expand_user_path() {
+  local p="$1"
+  if [ "$p" = "~" ]; then
+    printf '%s' "$HOME"
+  elif [ "${p#"~/"}" != "$p" ]; then
+    printf '%s/%s' "$HOME" "${p#"~/"}"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+wrappers_bin_dir() {
+  printf '%s' "${CLAUDE_LAUNCHERS_WRAPPERS_DIR:-$HOME/.claude-fix/bin}"
+}
+
+cli_wrapper_name() {
+  local label="$1"
+  local s
+  s=$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
+  [ -n "$s" ] || s="profile"
+  printf 'claude-%s' "$s"
+}
+
+write_cli_wrapper() {
+  local label="$1"
+  local config_dir="$2"
+  local bin name path
+  bin=$(wrappers_bin_dir)
+  mkdir -p "$bin"
+  name=$(cli_wrapper_name "$label")
+  path="$bin/$name"
+  cat >"$path" <<EOF
+#!/bin/bash
+# claude-fix CLI wrapper for profile $(shell_quote "$label")
+export CLAUDE_CONFIG_DIR=$(shell_quote "$config_dir")
+exec claude "\$@"
+EOF
+  chmod +x "$path"
+  echo "     CLI wrapper: $path"
+  echo "       (add $bin to your PATH, then run: $name)"
+}
+
+remove_cli_wrapper() {
+  local label="$1"
+  local path
+  path="$(wrappers_bin_dir)/$(cli_wrapper_name "$label")"
+  if [ -f "$path" ]; then
+    rm -f "$path"
+    echo "     removed CLI wrapper: $path"
+  fi
+}
+
 applescript_escape() {
   local escaped="$1"
   escaped=${escaped//\\/\\\\}
@@ -764,12 +825,16 @@ load_generated_launchers() {
 }
 
 print_generated_launchers() {
-  local i
+  local i cfg
   echo "Found generated profile launcher(s):"
   for ((i = 0; i < ${#GENERATED_LABELS[@]}; i++)); do
     echo "  - Claude ${GENERATED_LABELS[$i]}"
     echo "    launcher: ${GENERATED_APPS[$i]}"
     echo "    local sign-in: ~/${GENERATED_DIRS[$i]}"
+    cfg=$(marker_value "${GENERATED_APPS[$i]}/$MARKER_FILE" "claude-config-dir")
+    if [ -n "$cfg" ]; then
+      echo "    Claude Code config: $cfg"
+    fi
   done
 }
 
@@ -1033,6 +1098,9 @@ Commands:
   upgrade              Rebuild launchers + quit duplicate Claude windows (keeps sign-ins)
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
+  config-dir <label> <path|default>  Set or clear CLAUDE_CONFIG_DIR for a profile
+  doctor               Report install, launchers, Code config dirs, wrappers
+  version              Print script and launcher-helper versions
   help                 Show this help
 
 Interactive default:
@@ -1047,6 +1115,9 @@ Create options:
   --dock               Pin created launchers to the Dock (idempotent)
   --no-dock            Do not change the Dock
   --dock-cleanup       With --dock, remove duplicate Claude.app Dock pins first
+  --claude-config-dir <path>
+                       Pair Desktop with a Claude Code config dir (CLAUDE_CONFIG_DIR)
+                       and install a CLI wrapper under ~/.claude-fix/bin
   --yes               Skip the interactive menu (assumes existing Work, creates Personal)
 
 Upgrade options:
@@ -1058,6 +1129,10 @@ Examples:
   ./make_claude_launchers.sh create Work Personal Clients
   ./make_claude_launchers.sh create --desktop --launch Personal
   ./make_claude_launchers.sh create --dock --dock-cleanup Work Personal
+  ./make_claude_launchers.sh create --claude-config-dir ~/.claude-personal Personal
+  ./make_claude_launchers.sh config-dir Personal ~/.claude-personal
+  ./make_claude_launchers.sh config-dir Personal default
+  ./make_claude_launchers.sh doctor
   ./make_claude_launchers.sh upgrade
   curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
   ./make_claude_launchers.sh clean --purge
@@ -1067,7 +1142,8 @@ Note:
   original profile icons (not affiliated with Anthropic) and open isolated
   profiles via --user-data-dir. Re-clicking a profile focuses the existing
   window instead of spawning another Dock icon. On curl install, icons
-  download to ~/.claude-fix/icons automatically.
+  download to ~/.claude-fix/icons automatically. Pair Claude Code with
+  --claude-config-dir so /desktop handoff finds the right transcript folder.
 MSG
 }
 
@@ -1128,6 +1204,11 @@ write_launch_profile_script() {
   local script_path="$1"
   local claude_app="$2"
   local data_dir="$3"
+  local config_dir="${4:-}"
+  local open_env=""
+  if [ -n "$config_dir" ]; then
+    open_env=" --env CLAUDE_CONFIG_DIR=$(shell_quote "$config_dir")"
+  fi
   cat >"$script_path" <<EOF
 #!/bin/bash
 # claude-fix launch helper (v${LAUNCHER_VERSION}): focus existing profile or open one new instance
@@ -1156,7 +1237,7 @@ if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
   # Focus failed (permissions / stale window) — open a new instance below.
 fi
 
-exec open -n -a "\$CLAUDE_APP" --args --user-data-dir="\$DATA_DIR"
+exec open -n -a "\$CLAUDE_APP"${open_env} --args --user-data-dir="\$DATA_DIR"
 EOF
   chmod +x "$script_path"
 }
@@ -1305,15 +1386,33 @@ make_launcher() {
   local app="$APPS/$name.app"
   local data="$HOME/$dir"
   local launch_script
+  local config_dir=""
+  local existing_config=""
 
   if [ -z "$CLAUDE_APP" ] || [ ! -d "$CLAUDE_APP" ]; then
     ensure_claude_app || return 1
+  fi
+
+  if [ -f "$app/$MARKER_FILE" ]; then
+    existing_config=$(marker_value "$app/$MARKER_FILE" "claude-config-dir")
+  fi
+  if [ "$CREATE_CLAUDE_CONFIG_DIR_SET" = "1" ]; then
+    config_dir="$CREATE_CLAUDE_CONFIG_DIR"
+  elif [ -n "$existing_config" ]; then
+    config_dir="$existing_config"
+  fi
+  if [ -n "$config_dir" ]; then
+    config_dir=$(expand_user_path "$config_dir")
   fi
 
   if [ -d "$data" ]; then
     echo "  -> profile '$label' already has data at ~/$dir (keeping it)"
   else
     echo "  -> creating new profile '$label' at ~/$dir"
+  fi
+  if [ -n "$config_dir" ]; then
+    echo "  -> Claude Code config dir: $config_dir"
+    mkdir -p "$config_dir"
   fi
 
   rm -rf "$app"   # only ever removes the launcher app, never the data dir
@@ -1325,12 +1424,27 @@ make_launcher() {
   fi
   rm -f "$app/Contents/Resources/Assets.car"
   launch_script="$app/$LAUNCH_SCRIPT_REL"
-  write_launch_profile_script "$launch_script" "$CLAUDE_APP" "$data"
+  write_launch_profile_script "$launch_script" "$CLAUDE_APP" "$data" "$config_dir"
   generate_profile_icon "$label" "$app/Contents/Resources/applet.icns" || true
-  printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\nlauncher-version=%s\n' \
-    "$label" "$dir" "$LAUNCHER_VERSION" >"$app/$MARKER_FILE"
+  if [ -n "$config_dir" ]; then
+    printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\nlauncher-version=%s\nclaude-config-dir=%s\n' \
+      "$label" "$dir" "$LAUNCHER_VERSION" "$config_dir" >"$app/$MARKER_FILE"
+  else
+    printf 'generated-by=claude-fix\nlabel=%s\ndata-dir=%s\nlauncher-version=%s\n' \
+      "$label" "$dir" "$LAUNCHER_VERSION" >"$app/$MARKER_FILE"
+  fi
+  # Ad-hoc sign so Gatekeeper accepts the edited bundle (launch-profile.sh + icon).
+  # Skip in tests — codesign can block on the system keychain helper.
+  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+    codesign --force --deep -s - "$app" >/dev/null 2>&1 || true
+  fi
   touch "$app"
   echo "     built launcher: $app"
+  if [ -n "$config_dir" ]; then
+    write_cli_wrapper "$label" "$config_dir"
+  elif [ -n "$existing_config" ]; then
+    remove_cli_wrapper "$label"
+  fi
   if [ "$desktop_aliases" = "1" ]; then
     make_desktop_shortcut "$app" "$name"
   fi
@@ -1470,6 +1584,21 @@ create_setup() {
         ;;
       --dock-cleanup)
         DOCK_CLEANUP=1
+        ;;
+      --claude-config-dir)
+        shift
+        if [ "$#" -eq 0 ]; then
+          echo "ERROR: --claude-config-dir requires a path" >&2
+          exit 1
+        fi
+        case "$1" in
+          --*)
+            echo "ERROR: --claude-config-dir requires a path" >&2
+            exit 1
+            ;;
+        esac
+        CREATE_CLAUDE_CONFIG_DIR_SET=1
+        CREATE_CLAUDE_CONFIG_DIR=$(expand_user_path "$1")
         ;;
       --yes|-y)
         SKIP_INTERACTIVE=1
@@ -1816,6 +1945,124 @@ clean_setup() {
   fi
 }
 
+config_dir_setup() {
+  local label path
+  if [ "$#" -ne 2 ]; then
+    echo "ERROR: usage: $0 config-dir <label> <path|default>" >&2
+    exit 1
+  fi
+  label=$(trim_label "$1")
+  path="$2"
+  if ! validate_label "$label"; then
+    echo "ERROR: invalid profile label: $1" >&2
+    exit 1
+  fi
+  require_tools osacompile osascript
+  if ! ensure_claude_app; then
+    return 1
+  fi
+  ensure_icons_available || true
+
+  if [ ! -d "$APPS/Claude $label.app" ] || [ ! -f "$APPS/Claude $label.app/$MARKER_FILE" ]; then
+    echo "ERROR: no generated launcher for profile '$label' in $APPS" >&2
+    echo "       Create it first: $0 create --claude-config-dir <path> $label" >&2
+    exit 1
+  fi
+
+  CREATE_CLAUDE_CONFIG_DIR_SET=1
+  case "$path" in
+    default|DEFAULT|none|NONE|-|"")
+      CREATE_CLAUDE_CONFIG_DIR=""
+      echo "Clearing Claude Code config dir for Claude $label (back to ~/.claude default)..."
+      ;;
+    *)
+      CREATE_CLAUDE_CONFIG_DIR=$(expand_user_path "$path")
+      echo "Setting Claude Code config dir for Claude $label..."
+      ;;
+  esac
+  make_launcher "$label" 0
+  echo "Done. Quit that profile (⌘Q) and reopen it from the launcher so the new env applies."
+}
+
+version_setup() {
+  cat <<MSG
+claude-fix $SCRIPT_VERSION
+launcher-helper-version=$LAUNCHER_VERSION
+MSG
+}
+
+doctor_setup() {
+  local i app marker ver cfg wrap wrap_path status_line
+  local outdated=0
+  local wrappers_dir
+  wrappers_dir=$(wrappers_bin_dir)
+
+  echo "claude-fix doctor"
+  echo "  script version:          $SCRIPT_VERSION"
+  echo "  launcher helper version: $LAUNCHER_VERSION"
+  if CLAUDE_APP=$(find_claude); then
+    echo "  Claude.app:              $CLAUDE_APP"
+  else
+    echo "  Claude.app:              NOT FOUND"
+  fi
+  echo "  launchers folder:        $APPS"
+  echo "  CLI wrappers folder:     $wrappers_dir"
+
+  load_generated_launchers
+  if [ "${#GENERATED_LABELS[@]}" -eq 0 ]; then
+    echo
+    echo "No generated launchers found. Run: $0"
+    return 0
+  fi
+
+  echo
+  echo "Profiles:"
+  for ((i = 0; i < ${#GENERATED_LABELS[@]}; i++)); do
+    app="${GENERATED_APPS[$i]}"
+    marker="$app/$MARKER_FILE"
+    ver=$(marker_value "$marker" "launcher-version")
+    cfg=$(marker_value "$marker" "claude-config-dir")
+    wrap=$(cli_wrapper_name "${GENERATED_LABELS[$i]}")
+    wrap_path="$wrappers_dir/$wrap"
+    status_line="ok"
+    if [ "$ver" != "$LAUNCHER_VERSION" ]; then
+      status_line="OUTDATED (v${ver:-?}; run upgrade)"
+      outdated=1
+    fi
+    echo "  - Claude ${GENERATED_LABELS[$i]}"
+    echo "      launcher:     $app"
+    echo "      data dir:     $HOME/${GENERATED_DIRS[$i]}"
+    echo "      helper:       v${ver:-?} ($status_line)"
+    if [ -n "$cfg" ]; then
+      echo "      Code config:  $cfg"
+    else
+      echo "      Code config:  (default ~/.claude — /desktop handoff shared across profiles)"
+    fi
+    if [ -x "$wrap_path" ]; then
+      echo "      CLI wrapper:  $wrap_path"
+    elif [ -n "$cfg" ]; then
+      echo "      CLI wrapper:  missing (re-run config-dir or create --claude-config-dir)"
+    else
+      echo "      CLI wrapper:  (none)"
+    fi
+  done
+
+  echo
+  if [ "$outdated" = "1" ]; then
+    echo "Action: run \`$0 upgrade\` to rebuild outdated launchers."
+  else
+    echo "All launchers are on helper v$LAUNCHER_VERSION."
+  fi
+  case ":$PATH:" in
+    *":$wrappers_dir:"*)
+      echo "PATH includes $wrappers_dir."
+      ;;
+    *)
+      echo "Tip: add wrappers to PATH:  export PATH=\"$wrappers_dir:\$PATH\""
+      ;;
+  esac
+}
+
 # Run when executed directly, or when piped to bash (curl | bash). Skip when sourced.
 if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
   require_macos
@@ -1833,6 +2080,16 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
     create)
       [ "$#" -gt 0 ] && shift
       create_setup "$@"
+      ;;
+    config-dir)
+      shift
+      config_dir_setup "$@"
+      ;;
+    doctor)
+      doctor_setup
+      ;;
+    version|--version)
+      version_setup
       ;;
     help|-h|--help)
       usage
