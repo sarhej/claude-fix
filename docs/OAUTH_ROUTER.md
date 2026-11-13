@@ -49,3 +49,13 @@ Optional helper that:
 - Never modify `/Applications/Claude.app`  
 - Only route to launchers marked `generated-by=claude-fix`  
 - Original icons only for the helper (simple generic / Claude Fix branding)
+
+## Thanks
+
+Link routing (own the return scheme → ask which profile → forward by PID /
+reclaim after Claude steals the handler) was explored by
+[slukedev](https://github.com/slukedev) in
+[PR #3](https://github.com/sarhej/claude-fix/pull/3) and in
+[claude-profile-hub](https://github.com/slukedev/claude-profile-hub).
+claude-fix’s optional `oauth-router` adapts that idea under Claude Fix
+naming and without Claude-branded icons or app clones.

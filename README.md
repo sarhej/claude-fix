@@ -205,6 +205,11 @@ profile is used automatically). Claude may reclaim the scheme when it starts;
 launchers nudge the helper to take it back. Turn off with
 `claude-fix oauth-router off` (also cleared by `clean`).
 
+Thanks to [slukedev](https://github.com/slukedev) for the link-routing approach
+explored in [PR #3](https://github.com/sarhej/claude-fix/pull/3) and shipped in
+[claude-profile-hub](https://github.com/slukedev/claude-profile-hub) — it shaped
+this optional router.
+
 Notes:
 
 - Move existing Code project folders into the new config dir
@@ -224,7 +229,8 @@ Notes:
 | Duplicate `Claude.app` bundles manually | Breaks on updates; no Dock/icon tooling |
 | Paid / closed Mac apps | Less inspectable; often rebrand Claude icons |
 | npm multi-tools (Desktop + Code) | Extra Node dependency; heavier install |
-| **claude-fix** | Free MIT; brew; original icons; never modifies Claude.app; optional Code pairing via `--claude-config-dir` |
+| [claude-profile-hub](https://github.com/slukedev/claude-profile-hub) | Cross-platform; recolored Claude icons + own-app Dock identity; link routing. Thanks [slukedev](https://github.com/slukedev) — their routing work informed our optional `oauth-router`. |
+| **claude-fix** | Free MIT; brew; original icons; never modifies Claude.app; optional Code pairing via `--claude-config-dir`; optional `oauth-router` |
 
 ---
 
