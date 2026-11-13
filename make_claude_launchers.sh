@@ -15,6 +15,7 @@
 #   ./make_claude_launchers.sh clean --purge         # remove launchers AND data
 #   ./make_claude_launchers.sh create --claude-config-dir ~/.claude-personal Personal
 #   ./make_claude_launchers.sh doctor
+#   ./make_claude_launchers.sh oauth-router on
 #   ./make_claude_launchers.sh help
 #
 set -euo pipefail
@@ -22,11 +23,17 @@ set -euo pipefail
 APPS="$HOME/Applications"
 MARKER_FILE="Contents/Resources/claude-fix-generated"
 LAUNCH_SCRIPT_REL="Contents/Resources/launch-profile.sh"
+ROUTER_HELPER_REL="Contents/Resources/link-router.sh"
+ROUTER_NAME="Claude Fix Links"
+ROUTER_APP="$APPS/$ROUTER_NAME.app"
+ROUTER_BUNDLE_ID="com.sarhej.claude-fix.links"
+CLAUDE_BUNDLE_ID="com.anthropic.claudefordesktop"
 # Release version of this script (Homebrew formula / tags).
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.4.0"
+# v6 = optional oauth-router reclaim nudge from launch helpers
 # v5 = optional CLAUDE_CONFIG_DIR on open (Desktop ↔ Claude Code handoff)
 # v4 = focus only real Claude.app processes (not awk/ps false positives); fall through if focus fails
-LAUNCHER_VERSION=5
+LAUNCHER_VERSION=6
 ICON_COUNT=8
 GENERATED_LABELS=()
 GENERATED_APPS=()
@@ -812,6 +819,8 @@ load_generated_launchers() {
   for app in "$APPS/Claude "*.app; do
     marker="$app/$MARKER_FILE"
     [ -f "$marker" ] || continue
+    # Skip the optional link router (not a profile).
+    [ "$(marker_value "$marker" "kind")" = "router" ] && continue
     base=$(basename "$app" .app)
     label=$(marker_value "$marker" "label")
     [ -n "$label" ] || label=${base#Claude }
@@ -822,6 +831,14 @@ load_generated_launchers() {
     GENERATED_DIRS+=("$dir")
   done
   shopt -u nullglob
+}
+
+oauth_router_state_dir() {
+  printf '%s' "${CLAUDE_LAUNCHERS_ROUTER_DIR:-$HOME/.claude-fix/oauth-router}"
+}
+
+oauth_router_enabled() {
+  [ -f "$(oauth_router_state_dir)/enabled" ] && [ -d "$ROUTER_APP" ] && [ -f "$ROUTER_APP/$MARKER_FILE" ]
 }
 
 print_generated_launchers() {
@@ -1099,7 +1116,8 @@ Commands:
   clean                Remove generated launchers (keeps your profile data)
   clean --purge        Remove generated launchers AND their profile data
   config-dir <label> <path|default>  Set or clear CLAUDE_CONFIG_DIR for a profile
-  doctor               Report install, launchers, Code config dirs, wrappers
+  oauth-router on|off|status  Optional: route claude:// / connector OAuth to the right profile
+  doctor               Report install, launchers, Code config dirs, wrappers, router
   version              Print script and launcher-helper versions
   help                 Show this help
 
@@ -1133,6 +1151,7 @@ Examples:
   ./make_claude_launchers.sh config-dir Personal ~/.claude-personal
   ./make_claude_launchers.sh config-dir Personal default
   ./make_claude_launchers.sh doctor
+  ./make_claude_launchers.sh oauth-router on
   ./make_claude_launchers.sh upgrade
   curl -fsSL https://raw.githubusercontent.com/sarhej/claude-fix/main/make_claude_launchers.sh | bash -s upgrade
   ./make_claude_launchers.sh clean --purge
@@ -1144,6 +1163,7 @@ Note:
   window instead of spawning another Dock icon. On curl install, icons
   download to ~/.claude-fix/icons automatically. Pair Claude Code with
   --claude-config-dir so /desktop handoff finds the right transcript folder.
+  Connector / OAuth return links: enable optional oauth-router (off by default).
 MSG
 }
 
@@ -1232,11 +1252,18 @@ pid="\$(
 
 if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
   if /usr/bin/osascript -e "tell application \\"System Events\\" to set frontmost of first process whose unix id is \$pid to true" >/dev/null 2>&1; then
+    # Claude reclaims claude:// on launch; nudge the optional link router to take it back.
+    if [ -f "\$HOME/.claude-fix/oauth-router/enabled" ]; then
+      open -g "claude-fix://background" >/dev/null 2>&1 || true
+    fi
     exit 0
   fi
   # Focus failed (permissions / stale window) — open a new instance below.
 fi
 
+if [ -f "\$HOME/.claude-fix/oauth-router/enabled" ]; then
+  open -g "claude-fix://background" >/dev/null 2>&1 || true
+fi
 exec open -n -a "\$CLAUDE_APP"${open_env} --args --user-data-dir="\$DATA_DIR"
 EOF
   chmod +x "$script_path"
@@ -1376,6 +1403,7 @@ upgrade_setup() {
   echo
   echo "Done. Launchers updated — clicking a profile opens it once; re-click focuses the same window."
   echo "If Dock icons still look stacked, wait a second or run: killall Dock"
+  oauth_router_nudge
 }
 
 make_launcher() {
@@ -1448,6 +1476,7 @@ make_launcher() {
   if [ "$desktop_aliases" = "1" ]; then
     make_desktop_shortcut "$app" "$name"
   fi
+  oauth_router_nudge
 }
 
 refresh_dock_after_start_fresh() {
@@ -1877,6 +1906,373 @@ $dir
   fi
 }
 
+# --- Optional OAuth / deep-link router (Claude Fix Links) --------------------
+
+running_profile_pid() {
+  local data_dir="$1"
+  local flag="--user-data-dir=${data_dir}"
+  ps -axo pid=,command= 2>/dev/null | awk -v flag="$flag" '
+  !found && index($0, "Claude.app/Contents/MacOS/Claude") {
+    for (i = 2; i <= NF; i++) {
+      if ($i == flag) { print $1; found = 1; break }
+    }
+  }'
+}
+
+write_router_resources() {
+  local resources="$1"
+  mkdir -p "$resources"
+
+  cat >"$resources/focus.js" <<'JS'
+ObjC.import('AppKit');
+
+function code(s) {
+  return ((s.charCodeAt(0) << 24) | (s.charCodeAt(1) << 16) | (s.charCodeAt(2) << 8) | s.charCodeAt(3)) >>> 0;
+}
+
+function run(argv) {
+  var pid = parseInt(argv[0], 10);
+  var url = argv.length > 1 ? argv[1] : '';
+  var target = $.NSAppleEventDescriptor.descriptorWithProcessIdentifier(pid);
+  var event = url
+    ? $.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(code('GURL'), code('GURL'), target, -1, 0)
+    : $.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(code('aevt'), code('rapp'), target, -1, 0);
+  if (url) {
+    event.setParamDescriptorForKeyword($.NSAppleEventDescriptor.descriptorWithString(url), code('----'));
+  }
+  var error = Ref();
+  var reply = event.sendEventWithOptionsTimeoutError(3, 10, error);
+  var app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);
+  if (!app.isNil()) {
+    app.activateWithOptions(3);
+  }
+  if (!reply || reply.isNil() || (error[0] && !error[0].isNil())) {
+    throw new Error('Apple event was not delivered');
+  }
+}
+JS
+
+  cat >"$resources/claim.js" <<'JS'
+ObjC.import('CoreServices');
+
+function run(argv) {
+  for (var i = 1; i < argv.length; i++) {
+    $.LSSetDefaultHandlerForURLScheme($(argv[i]), $(argv[0]));
+  }
+}
+JS
+
+  cat >"$resources/link-router.sh" <<'ROUTER'
+#!/bin/bash
+# Runtime helper inside Claude Fix Links.app
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APP_ROOT="$(cd "$HERE/../.." && pwd)"
+MARKER="$APP_ROOT/Contents/Resources/claude-fix-generated"
+APPS="${HOME}/Applications"
+STATE_DIR="${HOME}/.claude-fix/oauth-router"
+CLAUDE_BUNDLE_ID="com.anthropic.claudefordesktop"
+SCHEMES=(claude msauth.com.anthropic.claudefordesktop claude-fix)
+
+marker_value() {
+  local marker="$1" key="$2"
+  awk -F= -v key="$key" '$1 == key {print substr($0, length(key) + 2); exit}' "$marker" 2>/dev/null || true
+}
+
+claude_app() {
+  local p
+  p=$(marker_value "$MARKER" "claude-app")
+  if [ -n "$p" ] && [ -d "$p" ]; then
+    printf '%s' "$p"
+    return 0
+  fi
+  for p in "/Applications/Claude.app" "$HOME/Applications/Claude.app"; do
+    [ -d "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+list_profiles() {
+  local app marker kind
+  shopt -s nullglob
+  for app in "$APPS/Claude "*.app; do
+    marker="$app/Contents/Resources/claude-fix-generated"
+    [ -f "$marker" ] || continue
+    kind=$(marker_value "$marker" "kind")
+    [ "$kind" = "router" ] && continue
+    basename "$app" .app
+  done
+  shopt -u nullglob
+}
+
+running_profile_pid() {
+  local data_dir="$1"
+  local flag="--user-data-dir=${data_dir}"
+  ps -axo pid=,command= 2>/dev/null | awk -v flag="$flag" '
+  !found && index($0, "Claude.app/Contents/MacOS/Claude") {
+    for (i = 2; i <= NF; i++) {
+      if ($i == flag) { print $1; found = 1; break }
+    }
+  }'
+}
+
+cmd_claim() {
+  local id="${1:-}"
+  if [ -z "$id" ]; then
+    id=$(marker_value "$MARKER" "bundle-id")
+    id="${id:-com.sarhej.claude-fix.links}"
+  fi
+  /usr/bin/osascript -l JavaScript "$HERE/claim.js" "$id" "${SCHEMES[@]}" >/dev/null 2>&1
+}
+
+cmd_open() {
+  local name="$1" url="${2:-}" app data_dir pid label marker
+  app=$(claude_app) || {
+    echo "Claude.app not found." >&2
+    return 1
+  }
+  marker="$APPS/${name}.app/Contents/Resources/claude-fix-generated"
+  if [ ! -f "$marker" ]; then
+    echo "No Claude Fix launcher named ${name}." >&2
+    return 1
+  fi
+  data_dir=$(marker_value "$marker" "data-dir")
+  label=$(marker_value "$marker" "label")
+  [ -n "$data_dir" ] || data_dir="Claude${label}"
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$name" >"$STATE_DIR/last-profile"
+
+  pid=$(running_profile_pid "$HOME/$data_dir" || true)
+  if [ -n "$pid" ]; then
+    if ! /usr/bin/osascript -l JavaScript "$HERE/focus.js" "$pid" "$url" >/dev/null 2>&1; then
+      if [ -n "$url" ]; then
+        echo "Allow Claude Fix Links to control Claude in System Settings > Privacy & Security > Automation, then try again." >&2
+        return 1
+      fi
+    fi
+  else
+    local args=() cfg
+    cfg=$(marker_value "$marker" "claude-config-dir")
+    [ -n "$cfg" ] && args+=(--env "CLAUDE_CONFIG_DIR=$cfg")
+    args+=(-n -a "$app")
+    [ -n "$url" ] && args+=("$url")
+    args+=(--args "--user-data-dir=$HOME/$data_dir")
+    open "${args[@]}" || return 1
+  fi
+  cmd_claim || true
+}
+
+case "${1:-}" in
+  list) list_profiles ;;
+  last) cat "$STATE_DIR/last-profile" 2>/dev/null || true ;;
+  open) shift; cmd_open "$@" ;;
+  claim) shift; cmd_claim "$@" ;;
+  *)
+    echo "usage: link-router.sh list|last|open NAME [URL]|claim [BUNDLE_ID]" >&2
+    exit 2
+    ;;
+esac
+ROUTER
+  chmod +x "$resources/link-router.sh"
+}
+
+router_applet_source() {
+  cat <<'APPLESCRIPT'
+property claimUntil : missing value
+
+on run
+	my pick("")
+	my keepClaiming()
+end run
+
+on open location theURL
+	if theURL starts with "claude-fix:" then
+		my keepClaiming()
+		try
+			do shell script my helper() & " claim"
+		end try
+	else
+		my pick(theURL)
+		my keepClaiming()
+	end if
+end open location
+
+on keepClaiming()
+	set claimUntil to (current date) + 60
+end keepClaiming
+
+on idle
+	if claimUntil is not missing value and (current date) < claimUntil then
+		try
+			do shell script my helper() & " claim"
+		end try
+		return 3
+	end if
+	quit
+	return 3
+end idle
+
+on helper()
+	return "/bin/bash " & quoted form of ((POSIX path of (path to me)) & "Contents/Resources/link-router.sh")
+end helper
+
+on pick(theURL)
+	set profileText to do shell script my helper() & " list"
+	if profileText is "" then
+		activate
+		display alert "No Claude Fix profiles" message "Create a profile with claude-fix first, then try the sign-in link again." as warning
+		return
+	end if
+	set profileNames to paragraphs of profileText
+	set lastName to ""
+	try
+		set lastName to do shell script my helper() & " last"
+	end try
+	set preselect to item 1 of profileNames
+	if profileNames contains lastName then set preselect to lastName
+	set chosen to preselect
+	if (count of profileNames) > 1 then
+		if theURL is "" then
+			set question to "Open which Claude Fix profile?"
+		else
+			set question to "Continue sign-in / connector in which profile?"
+		end if
+		activate
+		set choice to choose from list profileNames with title "Claude Fix" with prompt question default items {preselect} OK button name "Open"
+		if choice is false then return
+		set chosen to item 1 of choice
+	end if
+	try
+		do shell script my helper() & " open " & quoted form of chosen & " " & quoted form of theURL
+	on error errText
+		display alert "Couldn't open " & chosen message errText as warning
+	end try
+end pick
+APPLESCRIPT
+}
+
+install_oauth_router() {
+  local plist src tmp
+  require_tools osacompile osascript plutil
+  if ! ensure_claude_app; then
+    return 1
+  fi
+  mkdir -p "$(oauth_router_state_dir)" "$APPS"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/claude-fix-router.XXXXXX")
+  src="$tmp/router.applescript"
+  router_applet_source >"$src"
+  rm -rf "$ROUTER_APP"
+  if ! osacompile -s -o "$ROUTER_APP" "$src" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    echo "ERROR: failed to build $ROUTER_NAME" >&2
+    return 1
+  fi
+  rm -rf "$tmp"
+  rm -f "$ROUTER_APP/Contents/Resources/Assets.car"
+  write_router_resources "$ROUTER_APP/Contents/Resources"
+  printf 'generated-by=claude-fix\nkind=router\nbundle-id=%s\nclaude-app=%s\nlauncher-version=%s\n' \
+    "$ROUTER_BUNDLE_ID" "$CLAUDE_APP" "$LAUNCHER_VERSION" >"$ROUTER_APP/$MARKER_FILE"
+
+  plist="$ROUTER_APP/Contents/Info.plist"
+  plutil -replace CFBundleIdentifier -string "$ROUTER_BUNDLE_ID" "$plist" >/dev/null
+  plutil -replace CFBundleName -string "$ROUTER_NAME" "$plist" >/dev/null
+  plutil -replace CFBundleDisplayName -string "$ROUTER_NAME" "$plist" >/dev/null 2>&1 || true
+  plutil -replace LSUIElement -bool YES "$plist" >/dev/null
+  plutil -replace NSAppleEventsUsageDescription -string \
+    "Claude Fix Links sends sign-in and connector return URLs to the Claude profile you choose." \
+    "$plist" >/dev/null
+  plutil -replace CFBundleURLTypes -xml \
+    '<array><dict><key>CFBundleURLName</key><string>Claude Fix links</string><key>CFBundleURLSchemes</key><array><string>claude</string><string>msauth.com.anthropic.claudefordesktop</string><string>claude-fix</string></array></dict></array>' \
+    "$plist" >/dev/null
+
+  if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ]; then
+    codesign --force --deep -s - "$ROUTER_APP" >/dev/null 2>&1 || true
+    /bin/bash "$ROUTER_APP/$ROUTER_HELPER_REL" claim >/dev/null 2>&1 || true
+  fi
+  touch "$(oauth_router_state_dir)/enabled"
+  echo "Installed $ROUTER_NAME at $ROUTER_APP"
+  echo "  claude:// and connector return links will ask which profile to use."
+  echo "  Turn off with: $0 oauth-router off"
+}
+
+remove_oauth_router() {
+  local state
+  state=$(oauth_router_state_dir)
+  if [ -d "$ROUTER_APP" ] && [ -f "$ROUTER_APP/$MARKER_FILE" ]; then
+    if [ "$(marker_value "$ROUTER_APP/$MARKER_FILE" "kind")" = "router" ]; then
+      if [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" != "1" ] && [ -f "$ROUTER_APP/$ROUTER_HELPER_REL" ]; then
+        /bin/bash "$ROUTER_APP/$ROUTER_HELPER_REL" claim "$CLAUDE_BUNDLE_ID" >/dev/null 2>&1 || true
+      fi
+      echo "Removing $ROUTER_NAME (links go back to Claude.app when possible)"
+      rm -rf "$ROUTER_APP"
+    fi
+  fi
+  rm -f "$state/enabled"
+}
+
+oauth_router_nudge() {
+  oauth_router_enabled || return 0
+  [ "${CLAUDE_LAUNCHERS_TEST_MODE:-}" = "1" ] && return 0
+  open -g "claude-fix://background" >/dev/null 2>&1 || true
+}
+
+default_handler_for_scheme() {
+  local scheme="$1"
+  case "$scheme" in
+    claude|claude-fix|msauth.com.anthropic.claudefordesktop) ;;
+    *) return 0 ;;
+  esac
+  /usr/bin/osascript -l JavaScript 2>/dev/null <<JS || true
+ObjC.import('CoreServices');
+var h = $.LSCopyDefaultHandlerForURLScheme('$scheme');
+if (h && !h.isNil()) {
+  console.log(ObjC.unwrap(h));
+}
+JS
+}
+
+oauth_router_status() {
+  local handler
+  echo "oauth-router:"
+  if oauth_router_enabled; then
+    echo "  state:   on"
+    echo "  app:     $ROUTER_APP"
+  elif [ -f "$(oauth_router_state_dir)/enabled" ]; then
+    echo "  state:   enabled flag present but $ROUTER_NAME missing (run: oauth-router on)"
+  else
+    echo "  state:   off"
+  fi
+  handler=$(default_handler_for_scheme "claude" || true)
+  if [ -n "$handler" ]; then
+    echo "  claude:// handler: $handler"
+  else
+    echo "  claude:// handler: (unknown)"
+  fi
+  if [ -f "$(oauth_router_state_dir)/last-profile" ]; then
+    echo "  last profile: $(cat "$(oauth_router_state_dir)/last-profile")"
+  fi
+}
+
+oauth_router_setup() {
+  local action="${1:-status}"
+  case "$action" in
+    on|enable)
+      install_oauth_router
+      ;;
+    off|disable)
+      remove_oauth_router
+      echo "oauth-router off."
+      ;;
+    status|"")
+      oauth_router_status
+      ;;
+    *)
+      echo "ERROR: usage: $0 oauth-router on|off|status" >&2
+      exit 1
+      ;;
+  esac
+}
+
 clean_setup() {
   local purge=0
   if [ "${1:-}" = "--purge" ]; then
@@ -1890,8 +2286,13 @@ clean_setup() {
   fi
   mkdir -p "$APPS"
 
+  # Turning off the router restores URL schemes before profile launchers go away.
+  if oauth_router_enabled || [ -f "$(oauth_router_state_dir)/enabled" ]; then
+    remove_oauth_router
+  fi
+
   shopt -s nullglob
-  local found=0 app base label data ans
+  local found=0 app base label data data_dir ans kind
   for app in "$APPS/Claude "*.app; do
     [ -e "$app" ] || continue
     # Only touch launchers this script generated, never the real Claude.app or
@@ -1900,10 +2301,15 @@ clean_setup() {
       echo "  skip (not a generated launcher): $(basename "$app")"
       continue
     fi
+    kind=$(marker_value "$app/$MARKER_FILE" "kind")
+    [ "$kind" = "router" ] && continue
     found=1
     base=$(basename "$app" .app)
-    label=${base#Claude }
-    data="$HOME/$(slug "$label")"
+    label=$(marker_value "$app/$MARKER_FILE" "label")
+    [ -n "$label" ] || label=${base#Claude }
+    data_dir=$(marker_value "$app/$MARKER_FILE" "data-dir")
+    [ -n "$data_dir" ] || data_dir=$(slug "$label")
+    data="$HOME/$data_dir"
 
     echo "Removing launcher: $base.app"
     rm -rf "$app"
@@ -2007,6 +2413,8 @@ doctor_setup() {
   fi
   echo "  launchers folder:        $APPS"
   echo "  CLI wrappers folder:     $wrappers_dir"
+  echo
+  oauth_router_status
 
   load_generated_launchers
   if [ "${#GENERATED_LABELS[@]}" -eq 0 ]; then
@@ -2061,6 +2469,9 @@ doctor_setup() {
       echo "Tip: add wrappers to PATH:  export PATH=\"$wrappers_dir:\$PATH\""
       ;;
   esac
+  if ! oauth_router_enabled; then
+    echo "Tip: connector OAuth landing on the wrong profile? Try: $0 oauth-router on"
+  fi
 }
 
 # Run when executed directly, or when piped to bash (curl | bash). Skip when sourced.
@@ -2084,6 +2495,10 @@ if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
     config-dir)
       shift
       config_dir_setup "$@"
+      ;;
+    oauth-router)
+      shift
+      oauth_router_setup "$@"
       ;;
     doctor)
       doctor_setup

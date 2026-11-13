@@ -190,6 +190,21 @@ claude-personal   # same as: CLAUDE_CONFIG_DIR=~/.claude-personal claude
 Quit the Desktop profile (⌘Q) and reopen it from the launcher after changing
 the config dir. `upgrade` keeps the pairing. Check with `claude-fix doctor`.
 
+### Connector / OAuth opens the wrong Claude window?
+
+All profiles share Claude.app’s bundle ID, so the last instance to launch often
+steals `claude://` (and related) return links. **Optional fix:**
+
+```bash
+claude-fix oauth-router on
+```
+
+That installs **Claude Fix Links** (hidden helper). Sign-in and connector
+callbacks ask which profile to continue in (last-used is preselected; a single
+profile is used automatically). Claude may reclaim the scheme when it starts;
+launchers nudge the helper to take it back. Turn off with
+`claude-fix oauth-router off` (also cleared by `clean`).
+
 Notes:
 
 - Move existing Code project folders into the new config dir
@@ -417,7 +432,8 @@ launchers focus the existing window for that profile and quit extras.
 | `create --claude-config-dir <path>` | Pair Desktop with a Claude Code config dir; install CLI wrapper. |
 | `config-dir <label> <path or default>` | Set or clear Code pairing on an existing launcher. |
 | `upgrade` | Rebuild all launchers (focus-if-open) and quit duplicate Claude windows. |
-| `doctor` | Report Claude.app, launchers, Code config dirs, wrappers, outdated helpers. |
+| `oauth-router on` / `off` / `status` | Optional: route `claude://` / connector OAuth to the profile you choose. |
+| `doctor` | Report Claude.app, launchers, Code config dirs, wrappers, router, outdated helpers. |
 | `version` | Print script and launcher-helper versions. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
@@ -671,6 +687,18 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.4.0 — 2026-11-13
+
+**Optional OAuth / connector link router**
+
+- `oauth-router on|off|status` installs **Claude Fix Links** to own `claude://`
+  (and related) return URLs and ask which profile should continue
+- Launch helpers nudge reclaim after Claude steals the scheme; `clean` removes
+  the helper
+- Launcher helper v6
+
+---
 
 ### v1.3.0 — 2026-11-13
 
