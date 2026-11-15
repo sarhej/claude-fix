@@ -190,6 +190,26 @@ claude-personal   # same as: CLAUDE_CONFIG_DIR=~/.claude-personal claude
 Quit the Desktop profile (⌘Q) and reopen it from the launcher after changing
 the config dir. `upgrade` keeps the pairing. Check with `claude-fix doctor`.
 
+### Connector / OAuth opens the wrong Claude window?
+
+All profiles share Claude.app’s bundle ID, so the last instance to launch often
+steals `claude://` (and related) return links. **Optional fix:**
+
+```bash
+claude-fix oauth-router on
+```
+
+That installs **Claude Fix Links** (hidden helper). Sign-in and connector
+callbacks ask which profile to continue in (last-used is preselected; a single
+profile is used automatically). Claude may reclaim the scheme when it starts;
+launchers nudge the helper to take it back. Turn off with
+`claude-fix oauth-router off` (also cleared by `clean`).
+
+Thanks to [slukedev](https://github.com/slukedev) for the link-routing approach
+explored in [PR #3](https://github.com/sarhej/claude-fix/pull/3) and shipped in
+[claude-profile-hub](https://github.com/slukedev/claude-profile-hub) — it shaped
+this optional router.
+
 Notes:
 
 - Move existing Code project folders into the new config dir
@@ -209,7 +229,8 @@ Notes:
 | Duplicate `Claude.app` bundles manually | Breaks on updates; no Dock/icon tooling |
 | Paid / closed Mac apps | Less inspectable; often rebrand Claude icons |
 | npm multi-tools (Desktop + Code) | Extra Node dependency; heavier install |
-| **claude-fix** | Free MIT; brew; original icons; never modifies Claude.app; optional Code pairing via `--claude-config-dir` |
+| [claude-profile-hub](https://github.com/slukedev/claude-profile-hub) | Cross-platform; recolored Claude icons + own-app Dock identity; link routing. Thanks [slukedev](https://github.com/slukedev) — their routing work informed our optional `oauth-router`. |
+| **claude-fix** | Free MIT; brew; original icons; never modifies Claude.app; optional Code pairing via `--claude-config-dir`; optional `oauth-router` |
 
 ---
 
@@ -417,7 +438,8 @@ launchers focus the existing window for that profile and quit extras.
 | `create --claude-config-dir <path>` | Pair Desktop with a Claude Code config dir; install CLI wrapper. |
 | `config-dir <label> <path or default>` | Set or clear Code pairing on an existing launcher. |
 | `upgrade` | Rebuild all launchers (focus-if-open) and quit duplicate Claude windows. |
-| `doctor` | Report Claude.app, launchers, Code config dirs, wrappers, outdated helpers. |
+| `oauth-router on` / `off` / `status` | Optional: route `claude://` / connector OAuth to the profile you choose. |
+| `doctor` | Report Claude.app, launchers, Code config dirs, wrappers, router, outdated helpers. |
 | `version` | Print script and launcher-helper versions. |
 | `clean` | Remove generated launchers; **keep** all profile data. |
 | `clean --purge` | Remove launchers **and** generated profile data (per-profile confirmation). |
@@ -671,6 +693,18 @@ CI runs automatically on push/PR via GitHub Actions (`.github/workflows/test.yml
 ---
 
 ## Release notes
+
+### v1.4.0 — 2026-11-13
+
+**Optional OAuth / connector link router**
+
+- `oauth-router on|off|status` installs **Claude Fix Links** to own `claude://`
+  (and related) return URLs and ask which profile should continue
+- Launch helpers nudge reclaim after Claude steals the scheme; `clean` removes
+  the helper
+- Launcher helper v6
+
+---
 
 ### v1.3.0 — 2026-11-13
 

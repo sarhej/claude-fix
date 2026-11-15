@@ -37,6 +37,7 @@ test_help() {
   assert_contains "$out" "--dock-cleanup" "documents Dock cleanup option"
   assert_contains "$out" "upgrade" "documents upgrade command"
   assert_contains "$out" "doctor" "documents doctor command"
+  assert_contains "$out" "oauth-router" "documents oauth-router command"
   assert_contains "$out" "--claude-config-dir" "documents Claude Code config option"
   assert_contains "$out" "existing Claude login" "documents existing profile model"
   assert_contains "$out" "original profile icons" "documents icon policy"
@@ -421,7 +422,7 @@ test_launcher_applescript_payload() {
   assert_contains "$launch_body" "Claude.app/Contents/MacOS/Claude" "matches only Claude binary"
   assert_not_contains "$launch_body" "exit }" "awk must not early-exit (SIGPIPE 141)"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=5" "marker records launcher version"
+    "launcher-version=6" "marker records launcher version"
   teardown_sandbox
 }
 
@@ -1152,7 +1153,7 @@ test_upgrade_preserves_claude_config_dir() {
     "$cfg" >"$marker"
   capture_script upgrade --no-quit-duplicates >/dev/null
   assert_contains "$(cat "$marker")" "claude-config-dir=$cfg" "config dir preserved"
-  assert_contains "$(cat "$marker")" "launcher-version=5" "helper upgraded"
+  assert_contains "$(cat "$marker")" "launcher-version=6" "helper upgraded"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" \
     "$cfg" "launch helper still pairs Code config"
   teardown_sandbox
@@ -1165,13 +1166,42 @@ test_doctor_and_version() {
   capture_script create --claude-config-dir "$HOME/.claude-personal" Personal >/dev/null
   local ver doctor
   ver="$(capture_script version)"
-  assert_contains "$ver" "claude-fix 1.3.0" "version prints script version"
-  assert_contains "$ver" "launcher-helper-version=5" "version prints helper version"
+  assert_contains "$ver" "claude-fix 1.4.0" "version prints script version"
+  assert_contains "$ver" "launcher-helper-version=6" "version prints helper version"
   doctor="$(capture_script doctor)"
   assert_contains "$doctor" "Claude Personal" "doctor lists profile"
   assert_contains "$doctor" "Code config:" "doctor shows Code config"
   assert_contains "$doctor" ".claude-personal" "doctor shows config path"
-  assert_contains "$doctor" "All launchers are on helper v5" "doctor healthy"
+  assert_contains "$doctor" "All launchers are on helper v6" "doctor healthy"
+  assert_contains "$doctor" "oauth-router:" "doctor reports router"
+  teardown_sandbox
+}
+
+test_oauth_router_on_off() {
+  test_start "oauth-router installs helper app and cleans up"
+  setup_sandbox
+  create_mock_claude >/dev/null
+  capture_script create Work >/dev/null
+  local out
+  out="$(capture_script oauth-router on)"
+  assert_contains "$out" "Installed Claude Fix Links" "install message"
+  assert_file_exists "$HOME/Applications/Claude Fix Links.app/Contents/Resources/link-router.sh" "router helper present"
+  assert_file_exists "$HOME/Applications/Claude Fix Links.app/Contents/Resources/focus.js" "focus.js present"
+  assert_file_exists "$HOME/Applications/Claude Fix Links.app/Contents/Resources/claim.js" "claim.js present"
+  assert_file_exists "$HOME/.claude-fix/oauth-router/enabled" "enabled flag"
+  assert_contains "$(cat "$HOME/Applications/Claude Fix Links.app/Contents/Resources/claude-fix-generated")" \
+    "kind=router" "router marker"
+  assert_contains "$(capture_script oauth-router status)" "state:   on" "status on"
+  # Profile list must not include the router app
+  assert_contains "$(capture_script doctor)" "Claude Work" "doctor still lists Work"
+  assert_not_contains "$(/bin/bash "$HOME/Applications/Claude Fix Links.app/Contents/Resources/link-router.sh" list)" \
+    "Claude Fix Links" "router list omits itself"
+  assert_contains "$(/bin/bash "$HOME/Applications/Claude Fix Links.app/Contents/Resources/link-router.sh" list)" \
+    "Claude Work" "router lists Work"
+  out="$(capture_script oauth-router off)"
+  assert_contains "$out" "oauth-router off" "off message"
+  assert_file_missing "$HOME/Applications/Claude Fix Links.app" "router app removed"
+  assert_file_missing "$HOME/.claude-fix/oauth-router/enabled" "enabled cleared"
   teardown_sandbox
 }
 
@@ -1187,7 +1217,7 @@ test_upgrade_rebuilds_outdated_launchers() {
   assert_file_exists "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh" "Work has launch helper"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/launch-profile.sh")" "frontmost" "Work focuses existing"
   assert_contains "$(cat "$HOME/Applications/Claude Work.app/Contents/Resources/claude-fix-generated")" \
-    "launcher-version=5" "Work marker upgraded"
+    "launcher-version=6" "Work marker upgraded"
   assert_file_exists "$HOME/Applications/Claude Personal.app/Contents/Resources/launch-profile.sh" "Personal has launch helper"
   teardown_sandbox
 }
@@ -1384,6 +1414,7 @@ main() {
   test_config_dir_command_and_clear
   test_upgrade_preserves_claude_config_dir
   test_doctor_and_version
+  test_oauth_router_on_off
   test_non_macos_rejected
 
   print_summary

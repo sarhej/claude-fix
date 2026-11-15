@@ -11,8 +11,9 @@ Thanks for wanting to help. Keep changes small and reviewable.
 - **Never modify, patch, or re-sign** `/Applications/Claude.app`. Launchers
   point at it with `--user-data-dir` only. No per-profile clones of Claude.app
   for visual identity.
-- **Naming.** Product stays **claude-fix** / Claude Fix. Do not introduce a
-  “Claude Profiles” (or similar) branded picker app.
+- **Naming.** Product stays **claude-fix** / Claude Fix. The optional link
+  helper is **Claude Fix Links** only — do not introduce a “Claude Profiles”
+  (or similar) branded picker app.
 - **No affiliation claims.** Keep the third-party / not endorsed by Anthropic
   wording accurate.
 
